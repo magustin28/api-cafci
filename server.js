@@ -1,34 +1,48 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const XLSX = require("xlsx");
 const cron = require("node-cron");
 const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 app.use(cors());
 
 const EXCEL_URL = "https://api.pub.cafci.org.ar/pb_get";
-const CARPETA = path.join(__dirname, "historico");
 
-// Crear carpeta si no existe
-if (!fs.existsSync(CARPETA)) fs.mkdirSync(CARPETA);
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 function fechaHoy() {
-  return new Date().toISOString().split("T")[0]; // "2026-02-24"
+  return new Date().toISOString().split("T")[0];
 }
 
-function leerExcel(rutaArchivo) {
-  const workbook = XLSX.readFile(rutaArchivo);
+function leerExcel(buffer) {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
   const hoja = workbook.Sheets[workbook.SheetNames[0]];
   const filas = XLSX.utils.sheet_to_json(hoja, { header: 1 });
 
-  // Encabezados están en filas 8 y 9 (índice 7 y 8)
+  // Fila 9 (índice 8): sub-encabezados con fechas de referencia
+  const filaRefs = filas[8];
+
+  // G9=6, J9=9, K9=10, L9=11, P9=15
+  const referencias = {
+    valor_fecha_anterior: filaRefs[6] || null,
+    variacion_fecha1: filaRefs[9] || null,
+    variacion_fecha2: filaRefs[10] || null,
+    variacion_fecha3: filaRefs[11] || null,
+    patrimonio_fecha_anterior: filaRefs[15] || null,
+  };
+
+  // Fecha del archivo desde E12 (fila índice 11, columna índice 4)
+  const fechaArchivo = filas[11] && filas[11][4] ? filas[11][4] : null;
+
+  // Encabezados en filas 8 y 9 (índice 7 y 8)
   const encabezado1 = filas[7];
   const encabezado2 = filas[8];
 
-  // Propagar el valor del grupo cuando la celda está vacía (celdas mergeadas)
   let grupoActual = "";
   const columnas = encabezado1.map((col, i) => {
     if (col && col.toString().trim() !== "") {
@@ -41,23 +55,20 @@ function leerExcel(rutaArchivo) {
     return grupoActual;
   });
 
-  const categorias = [];
+  const listado_fondos = [];
   let categoriaActual = null;
 
-  // Procesar desde la fila 11 en adelante (índice 10)
   for (let i = 10; i < filas.length; i++) {
     const fila = filas[i];
     if (!fila || fila.length === 0) continue;
 
-    // Si la fila tiene solo un valor, es una categoría
     const valoresNoVacios = fila.filter((v) => v !== undefined && v !== "");
     if (valoresNoVacios.length === 1) {
-      categoriaActual = { categoria: fila[0], fondos: [] };
-      categorias.push(categoriaActual);
+      categoriaActual = { categoria_fondo: fila[0], fondos: [] };
+      listado_fondos.push(categoriaActual);
       continue;
     }
 
-    // Si hay categoría activa, agregar el fondo
     if (categoriaActual) {
       const fondo = {};
       columnas.forEach((col, idx) => {
@@ -67,24 +78,34 @@ function leerExcel(rutaArchivo) {
     }
   }
 
-  return categorias;
+  return { fechaArchivo, referencias, listado_fondos };
 }
 
-async function descargarExcel() {
+async function descargarYGuardar() {
   try {
     const fecha = fechaHoy();
-    const destino = path.join(CARPETA, `${fecha}.xlsx`);
 
-    // Si ya se descargó hoy, no vuelve a descargar
-    if (fs.existsSync(destino)) {
-      console.log("Ya existe el Excel de hoy:", fecha);
+    const { data: existente } = await supabase.from("PlanillasCAFCI").select("id").eq("fecha", fecha).single();
+
+    if (existente) {
+      console.log("Ya existe la planilla de hoy:", fecha);
       return;
     }
 
     console.log("Descargando planilla CAFCI...", fecha);
     const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer" });
-    fs.writeFileSync(destino, response.data);
-    console.log("Planilla guardada:", destino);
+    const { fechaArchivo, referencias, listado_fondos } = leerExcel(response.data);
+
+    console.log("fecha archivo:", fechaArchivo);
+    console.log("primera categoria_fondo:", listado_fondos[0].categoria_fondo);
+    console.log("cantidad fondos:", listado_fondos[0].fondos.length);
+
+    const datos = { fechaArchivo, referencias, listado_fondos };
+
+    const { error } = await supabase.from("PlanillasCAFCI").insert({ fecha, datos });
+
+    if (error) throw error;
+    console.log("Planilla guardada en Supabase:", fecha);
   } catch (error) {
     console.error("Error al descargar:", error.message);
   }
@@ -94,7 +115,7 @@ async function descargarExcel() {
 cron.schedule(
   "30 20 * * 1-5",
   () => {
-    descargarExcel();
+    descargarYGuardar();
   },
   {
     timezone: "America/Argentina/Buenos_Aires",
@@ -102,43 +123,45 @@ cron.schedule(
 );
 
 // Endpoint: último día disponible
-app.get("/api/fondos", (req, res) => {
-  const archivos = fs
-    .readdirSync(CARPETA)
-    .filter((f) => f.endsWith(".xlsx"))
-    .sort();
+app.get("/api/fondos", async (req, res) => {
+  const { data, error } = await supabase.from("PlanillasCAFCI").select("fecha, datos").order("fecha", { ascending: false }).limit(1).single();
 
-  if (archivos.length === 0) {
+  if (error || !data) {
     return res.status(404).json({ error: "Todavía no hay datos disponibles" });
   }
 
-  const ultimo = archivos[archivos.length - 1];
-  const datos = leerExcel(path.join(CARPETA, ultimo));
-  const fechaConsulta = new Date().toLocaleDateString("es-AR");
-  res.json({ fecha: fechaConsulta, datos });
+  res.json({
+    fecha: data.datos.fechaArchivo || data.fecha,
+    datos: {
+      referencias: data.datos.referencias,
+      listado_fondos: data.datos.listado_fondos,
+    },
+  });
 });
 
-// Endpoint: fecha específica → /api/fondos/2026-02-21
-app.get("/api/fondos/:fecha", (req, res) => {
-  const archivo = path.join(CARPETA, `${req.params.fecha}.xlsx`);
+// Endpoint: fecha específica → /api/fondos/2026-03-01
+app.get("/api/fondos/:fecha", async (req, res) => {
+  const { data, error } = await supabase.from("PlanillasCAFCI").select("fecha, datos").eq("fecha", req.params.fecha).single();
 
-  if (!fs.existsSync(archivo)) {
+  if (error || !data) {
     return res.status(404).json({ error: `No hay datos para la fecha ${req.params.fecha}` });
   }
 
-  const datos = leerExcel(archivo);
-  const fechaConsulta = new Date().toLocaleDateString("es-AR");
-  res.json({ fecha: fechaConsulta, datos });
+  res.json({
+    fecha: data.datos.fechaArchivo || data.fecha,
+    datos: {
+      referencias: data.datos.referencias,
+      listado_fondos: data.datos.listado_fondos,
+    },
+  });
 });
 
 // Endpoint: listar todas las fechas disponibles
-app.get("/api/fechas", (req, res) => {
-  const fechas = fs
-    .readdirSync(CARPETA)
-    .filter((f) => f.endsWith(".xlsx"))
-    .map((f) => f.replace(".xlsx", ""))
-    .sort();
-  res.json(fechas);
+app.get("/api/fechas", async (req, res) => {
+  const { data, error } = await supabase.from("PlanillasCAFCI").select("fecha").order("fecha", { ascending: true });
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data.map((d) => d.fecha));
 });
 
 const PORT = process.env.PORT || 3000;
