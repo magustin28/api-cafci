@@ -16,16 +16,12 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 function fechaHoy() {
-  return new Date()
-    .toLocaleDateString("es-AR", {
-      timeZone: "America/Argentina/Buenos_Aires",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    })
-    .split("/")
-    .reverse()
-    .join("-");
+  return new Date().toLocaleDateString("es-AR", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).split("/").reverse().join("-");
 }
 
 function leerExcel(buffer) {
@@ -38,10 +34,10 @@ function leerExcel(buffer) {
 
   // G9=6, J9=9, K9=10, L9=11, P9=15
   const referencias = {
-    valor_fecha_anterior: filaRefs[6] || null,
-    variacion_fecha1: filaRefs[9] || null,
-    variacion_fecha2: filaRefs[10] || null,
-    variacion_fecha3: filaRefs[11] || null,
+    valor_fecha_anterior:      filaRefs[6]  || null,
+    variacion_fecha1:          filaRefs[9]  || null,
+    variacion_fecha2:          filaRefs[10] || null,
+    variacion_fecha3:          filaRefs[11] || null,
     patrimonio_fecha_anterior: filaRefs[15] || null,
   };
 
@@ -90,18 +86,22 @@ function leerExcel(buffer) {
   return { fechaArchivo, referencias, listado_fondos };
 }
 
-async function descargarYGuardar() {
+async function descargarYGuardar(intento = 1) {
   try {
     const fecha = fechaHoy();
 
-    const { data: existente } = await supabase.from("PlanillasCAFCI").select("id").eq("fecha", fecha).single();
+    const { data: existente } = await supabase
+      .from("PlanillasCAFCI")
+      .select("id")
+      .eq("fecha", fecha)
+      .single();
 
     if (existente) {
       console.log("Ya existe la planilla de hoy:", fecha);
       return;
     }
 
-    console.log("Descargando planilla CAFCI...", fecha);
+    console.log(`Descargando planilla CAFCI... ${fecha} (intento ${intento})`);
     const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer" });
     const { fechaArchivo, referencias, listado_fondos } = leerExcel(response.data);
 
@@ -111,29 +111,39 @@ async function descargarYGuardar() {
 
     const datos = { fechaArchivo, referencias, listado_fondos };
 
-    const { error } = await supabase.from("PlanillasCAFCI").insert({ fecha, datos });
+    const { error } = await supabase
+      .from("PlanillasCAFCI")
+      .insert({ fecha, datos });
 
     if (error) throw error;
     console.log("Planilla guardada en Supabase:", fecha);
   } catch (error) {
-    console.error("Error al descargar:", error.message);
+    console.error(`Error al descargar (intento ${intento}):`, error.message);
+
+    if (intento < 3) {
+      console.log(`Reintentando en 30 minutos...`);
+      setTimeout(() => descargarYGuardar(intento + 1), 30 * 60 * 1000);
+    } else {
+      console.error("Se agotaron los reintentos.");
+    }
   }
 }
 
 // Descarga automática lunes a viernes a las 20:30hs Argentina
-cron.schedule(
-  "30 22 * * 1-5",
-  () => {
-    descargarYGuardar();
-  },
-  {
-    timezone: "America/Argentina/Buenos_Aires",
-  },
-);
+cron.schedule("30 20 * * 1-5", () => {
+  descargarYGuardar();
+}, {
+  timezone: "America/Argentina/Buenos_Aires",
+});
 
 // Endpoint: último día disponible
 app.get("/api/fondos", async (req, res) => {
-  const { data, error } = await supabase.from("PlanillasCAFCI").select("fecha, datos").order("fecha", { ascending: false }).limit(1).single();
+  const { data, error } = await supabase
+    .from("PlanillasCAFCI")
+    .select("fecha, datos")
+    .order("fecha", { ascending: false })
+    .limit(1)
+    .single();
 
   if (error || !data) {
     return res.status(404).json({ error: "Todavía no hay datos disponibles" });
@@ -150,7 +160,11 @@ app.get("/api/fondos", async (req, res) => {
 
 // Endpoint: fecha específica → /api/fondos/2026-03-01
 app.get("/api/fondos/:fecha", async (req, res) => {
-  const { data, error } = await supabase.from("PlanillasCAFCI").select("fecha, datos").eq("fecha", req.params.fecha).single();
+  const { data, error } = await supabase
+    .from("PlanillasCAFCI")
+    .select("fecha, datos")
+    .eq("fecha", req.params.fecha)
+    .single();
 
   if (error || !data) {
     return res.status(404).json({ error: `No hay datos para la fecha ${req.params.fecha}` });
@@ -167,7 +181,10 @@ app.get("/api/fondos/:fecha", async (req, res) => {
 
 // Endpoint: listar todas las fechas disponibles
 app.get("/api/fechas", async (req, res) => {
-  const { data, error } = await supabase.from("PlanillasCAFCI").select("fecha").order("fecha", { ascending: true });
+  const { data, error } = await supabase
+    .from("PlanillasCAFCI")
+    .select("fecha")
+    .order("fecha", { ascending: true });
 
   if (error) return res.status(500).json({ error: error.message });
   res.json(data.map((d) => d.fecha));
