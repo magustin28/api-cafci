@@ -129,8 +129,8 @@ async function descargarYGuardar(intento = 1) {
   }
 }
 
-// Descarga automática lunes a viernes a las 20:30hs Argentina
-cron.schedule("30 20 * * 1-5", () => {
+// Descarga automática lunes a viernes a las 22:30hs Argentina
+cron.schedule("30 22 * * 1-5", () => {
   descargarYGuardar();
 }, {
   timezone: "America/Argentina/Buenos_Aires",
@@ -188,12 +188,6 @@ app.get("/api/fechas", async (req, res) => {
 
   if (error) return res.status(500).json({ error: error.message });
   res.json(data.map((d) => d.fecha));
-});
-
-// Endpoint temporal para forzar descarga manualmente
-app.get("/api/descargar-ahora", (req, res) => {
-  descargarYGuardar();
-  res.json({ mensaje: "Descarga iniciada, esperá unos segundos y consultá /api/fechas" });
 });
 
 const PORT = process.env.PORT || 3000;
