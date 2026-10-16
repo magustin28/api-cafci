@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  render.yaml — DOCUMENTACIÓN INERTE (todavía NO conectar)
+#
+#  Este archivo describe el servicio que hoy corre en Render, pero NO se aplica
+#  automáticamente: Render sólo lee render.yaml cuando creás un Blueprint
+#  (Dashboard → New → Blueprint) y lo vinculás a este repo.
+#
+#  ⚠️  ANTES de crear el Blueprint, verificá en el panel de Render que
+#      'name', 'plan' y 'region' coincidan EXACTAMENTE con el servicio ACTUAL
+#      (hoy responde en https://api-cafci-x8m6.onrender.com).
+#      Si algún campo no coincide, Render puede crear un servicio NUEVO con
+#      otra URL en lugar de adoptar el existente — y el dashboard apunta a la
+#      URL actual (cafci-dashboard/src/lib/utils.js → API_BASE).
+#      Ojo: el subdominio (api-cafci-x8m6) NO es necesariamente el 'name';
+#      Render agrega el sufijo cuando el subdominio pedido ya está tomado.
+#
+#  Además, al adoptar el servicio, este archivo pasa a ser la fuente de verdad:
+#  los cambios hechos a mano en el panel se sobrescriben en el próximo sync.
+#  Con `sync: false` los secretos quedan en el panel y NO se guardan acá.
+#
+#  Referencia: https://render.com/docs/blueprint-spec
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+  - type: web
+    name: api-cafci            # ⚠️ VERIFICAR: nombre exacto del servicio en el panel
+    runtime: node
+    plan: free
+    region: oregon             # ⚠️ VERIFICAR: región actual del servicio
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start    # => package.json → "start": "node server.js"
+    healthCheckPath: /health   # liveness liviano (no consulta Supabase)
+    autoDeploy: true
+    envVars:
+      # sync: false → el valor no se escribe en este archivo: se completa en el panel
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false

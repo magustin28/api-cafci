@@ -5,6 +5,9 @@ const XLSX = require("xlsx");
 const cron = require("node-cron");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
+const pkg = require("./package.json");
+
+const startedAt = new Date();
 
 const app = express();
 app.use(cors());
@@ -190,5 +193,63 @@ app.get("/api/fechas", async (req, res) => {
   res.json(data.map((d) => d.fecha));
 });
 
+// ─────────────────────────────────────────────────────────────
+// GET /  → información del servicio (en vez del 404 HTML de Express)
+// ─────────────────────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.json({
+    api: pkg.name,
+    version: pkg.version,
+    node: process.version,
+    endpoints: ["/api/fondos", "/api/fondos/:fecha", "/api/fechas", "/health", "/health/db"],
+    repo: "https://github.com/magustin28/api-cafci",
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /health → LIVENESS. No usa red: responde siempre en < 5s.
+// Es el path recomendado para Render → Settings → Health Checks.
+// ─────────────────────────────────────────────────────────────
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    uptime: Math.round(process.uptime()),
+    startedAt: startedAt.toISOString(),
+    node: process.version,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /health/db → READINESS. Consulta real a Supabase.
+// Devuelve 503 si la base no responde (útil para uptime monitors).
+// NO usarlo como Health Check Path de Render: si Supabase tiene un pico
+// de latencia > 5s, Render reiniciaría la instancia sin necesidad.
+// ─────────────────────────────────────────────────────────────
+app.get("/health/db", async (req, res) => {
+  const t0 = Date.now();
+  const { data, error } = await supabase
+    .from("PlanillasCAFCI")
+    .select("fecha")
+    .order("fecha", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return res.status(503).json({ ok: false, error: error.message });
+
+  res.json({
+    ok: true,
+    ms: Date.now() - t0,
+    ultimaFecha: data ? data.fecha : null,
+  });
+});
+
+// 404 en JSON para cualquier ruta no definida
+app.use((req, res) => {
+  res.status(404).json({ error: `Ruta no encontrada: ${req.method} ${req.path}` });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API corriendo en puerto ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`API corriendo en puerto ${PORT}`);
+  console.log(`Health: http://localhost:${PORT}/health`);
+});
