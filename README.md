@@ -4,7 +4,7 @@ API REST que sirve las planillas diarias de **Fondos Comunes de Inversión (CAFC
 La consume el dashboard [`cafci-dashboard`](https://github.com/magustin28/dashboard-cafci).
 
 - **Producción:** https://api-cafci-x8m6.onrender.com (Render · plan free)
-- **Base de datos:** Supabase (Postgres) — tabla `PlanillasCAFCI` (`fecha`, `datos`)
+- **Base de datos:** Supabase (Postgres) — tabla `planillas_cafci` (`fecha`, `datos`)
 - **Fuente:** planilla diaria publicada por CAFCI (`https://api.pub.cafci.org.ar/pb_get`)
 
 ## Cómo funciona
@@ -13,7 +13,7 @@ La consume el dashboard [`cafci-dashboard`](https://github.com/magustin28/dashbo
 planilla CAFCI (.xls)
    │  cron lun-vie 22:30 (America/Argentina/Buenos_Aires)
    ▼
-server.js (Render)  ──insert──►  Supabase · PlanillasCAFCI (fecha, datos jsonb)
+server.js (Render)  ──insert──►  Supabase · planillas_cafci (fecha, datos jsonb)
    │
    │  GET /api/fondos · /api/fondos/:fecha · /api/fechas
    ▼
@@ -167,6 +167,15 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   con políticas `user_id = auth.uid()`.
 - `cors()` está abierto a cualquier origen (a evaluar: restringirlo a GitHub Pages).
 - No hay rate limiting en los endpoints públicos.
+
+## Convención de nombres
+
+Los objetos de la base van en **minúsculas `snake_case`**, con las tablas en plural:
+`planillas_cafci`, `favoritos`, `suscripciones`, `rescates`, `rescate_detalle`.
+En Postgres un identificador creado con mayúsculas queda *case-sensitive* y obliga a
+entrecomillarlo en cada consulta (`select * from "planillas_cafci"`), y es la causa típica del
+error `relation "planillascafci" does not exist` cuando alguien se olvida de las comillas.
+*(La tabla principal se renombró de `PlanillasCAFCI` a `planillas_cafci` por este motivo.)*
 
 ## Convención de commits
 

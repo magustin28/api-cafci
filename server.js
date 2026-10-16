@@ -94,7 +94,7 @@ async function descargarYGuardar(intento = 1) {
     const fecha = fechaHoy();
 
     const { data: existente } = await supabase
-      .from("PlanillasCAFCI")
+      .from("planillas_cafci")
       .select("id")
       .eq("fecha", fecha)
       .single();
@@ -115,7 +115,7 @@ async function descargarYGuardar(intento = 1) {
     const datos = { fechaArchivo, referencias, listado_fondos };
 
     const { error } = await supabase
-      .from("PlanillasCAFCI")
+      .from("planillas_cafci")
       .insert({ fecha, datos });
 
     if (error) throw error;
@@ -142,7 +142,7 @@ cron.schedule("30 22 * * 1-5", () => {
 // Endpoint: último día disponible
 app.get("/api/fondos", async (req, res) => {
   const { data, error } = await supabase
-    .from("PlanillasCAFCI")
+    .from("planillas_cafci")
     .select("fecha, datos")
     .order("fecha", { ascending: false })
     .limit(1)
@@ -164,7 +164,7 @@ app.get("/api/fondos", async (req, res) => {
 // Endpoint: fecha específica → /api/fondos/2026-03-01
 app.get("/api/fondos/:fecha", async (req, res) => {
   const { data, error } = await supabase
-    .from("PlanillasCAFCI")
+    .from("planillas_cafci")
     .select("fecha, datos")
     .eq("fecha", req.params.fecha)
     .single();
@@ -185,7 +185,7 @@ app.get("/api/fondos/:fecha", async (req, res) => {
 // Endpoint: listar todas las fechas disponibles
 app.get("/api/fechas", async (req, res) => {
   const { data, error } = await supabase
-    .from("PlanillasCAFCI")
+    .from("planillas_cafci")
     .select("fecha")
     .order("fecha", { ascending: true });
 
@@ -228,7 +228,7 @@ app.get("/health", (req, res) => {
 app.get("/health/db", async (req, res) => {
   const t0 = Date.now();
   const { data, error } = await supabase
-    .from("PlanillasCAFCI")
+    .from("planillas_cafci")
     .select("fecha")
     .order("fecha", { ascending: false })
     .limit(1)
