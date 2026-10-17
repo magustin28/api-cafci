@@ -14,7 +14,7 @@
     "descargar": "node descargar.js",
     "historico": "node cargar-historico.js",
     "check": "node --check server.js && node --check descargar.js && node --check cargar-historico.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.97.0",

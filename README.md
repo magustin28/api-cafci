@@ -217,6 +217,23 @@ Se sigue [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 
 Ámbitos usados: `api`, `dashboard`, `parser`, `deploy`, `db`, `docs`.
 
+## Tests
+
+```bash
+npm test        # node --test (runner de Node, sin dependencias nuevas)
+```
+
+`test/leerExcel.test.js` cubre el parser compartido. El Excel de prueba se genera **en memoria** con la propia librería `xlsx`, replicando la estructura del archivo de CAFCI (fila 8: grupos; fila 9: sub-encabezados con las fechas de referencia; E12: fecha del archivo; de la fila 11 en adelante: categorías y fondos), así que no hay fixture binario que mantener en el repo.
+
+Qué se verifica:
+
+- `leerExcel`: fecha del archivo, las 5 referencias, categorías y fondos, descarte de leyendas y categorías vacías, filas con datos pero sin nombre de fondo, y las claves que combinan grupo + sub-encabezado (las que consume el dashboard).
+- `convertirFecha`: `DD/MM/AA` y `DD/MM/AAAA`, y formato inválido.
+- `fechaHoy`: formato, y que use la fecha de Argentina y no la de UTC (el día cambia a las 21:00 ART).
+- `validarPlanilla`: falta de fecha, sin categorías, sin fondos, planilla incompleta, mínimo por argumento, y `MIN_FONDOS` del entorno con su valor por defecto (1000).
+
+> La fila 8 del fixture queda **densa** a propósito: `sheet_to_json` devuelve arrays con huecos en las celdas vacías y el parser arma los nombres con `encabezado1.map(...)`, que saltea los huecos. En el archivo real cada grupo se repite a lo ancho de sus columnas, por eso las claves aparecen completas.
+
 ## Estructura
 
 ```
@@ -227,6 +244,7 @@ cafci-api/
 ├── descargar.js          # (local) fuerza una descarga puntual
 ├── cargar-historico.js   # (local) carga masiva desde ./historico
 ├── render.yaml           # documentación inerte del servicio en Render
+├── test/leerExcel.test.js # tests del parser (npm test, sin dependencias nuevas)
 ├── .env.example          # plantilla de variables de entorno
 └── package.json
 ```
