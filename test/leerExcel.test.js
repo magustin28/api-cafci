@@ -48,7 +48,7 @@ function filaFondo(nombre, cnv, clasif, valor, var1, patrimonio) {
 }
 
 // Excel mínimo (en memoria) con la misma forma que el de CAFCI
-function excelDePrueba() {
+function excelDePrueba(encabezadoDisperso = false) {
   const filas = [];
   // filas 1..7: título y notas de la planilla. En el archivo real NO están vacías (si el
   // fixture las dejara vacías, xlsx recortaría el rango de la hoja y todo quedaría
@@ -64,10 +64,11 @@ function excelDePrueba() {
   ];
   for (const t of TITULOS) filas.push([t]);
 
-  // fila 8: encabezados de grupo. TIENE QUE QUEDAR DENSA (un valor en cada columna que
-  // abarca el grupo): sheet_to_json devuelve arrays con HUECOS en las celdas vacías y el
-  // parser arma los nombres con encabezado1.map(...) — y map/forEach SALTEAN los huecos.
-  // En el archivo real cada grupo se repite a lo ancho de sus columnas, por eso funciona.
+  // fila 8: encabezados de grupo. Por defecto cada grupo se repite a lo ancho de sus
+  // columnas (como en el archivo real de CAFCI). Con encabezadoDisperso = true el grupo se
+  // pone SOLO en la primera columna del tramo: sheet_to_json devuelve entonces arrays con
+  // HUECOS en las celdas vacías (y los merges NO se propagan), así que sirve para verificar
+  // que el parser igual arma todas las columnas heredando el grupo hacia la derecha.
   const h1 = [];
   h1[COL.FONDO] = "Fondo";
   h1[COL.CNV] = "Código CNV";
@@ -75,9 +76,17 @@ function excelDePrueba() {
   h1[COL.CLASIF] = "Código de Clasificación";
   h1[COL.CODMON] = "Código de Moneda";
   h1[COL.REGION] = "Clasificación_Región";
-  for (let i = COL.VALOR_ANT; i <= COL.VALOR_ACT + 1; i++) h1[i] = "Valor (mil cuotapartes)";
-  for (let i = COL.VAR1; i <= COL.VAR3 + 3; i++) h1[i] = "Variacion cuotaparte %";
-  for (let i = COL.PATR_ANT; i <= COL.PATR_ACT; i++) h1[i] = "Patrimonio";
+  const tramos = [
+    [COL.VALOR_ANT, COL.VALOR_ACT + 1, "Valor (mil cuotapartes)"],
+    [COL.VAR1, COL.VAR3 + 3, "Variacion cuotaparte %"],
+    [COL.PATR_ANT, COL.PATR_ACT, "Patrimonio"],
+  ];
+  for (const [desde, hasta, nombre] of tramos) {
+    for (let i = desde; i <= hasta; i++) {
+      if (encabezadoDisperso && i !== desde) continue; // deja huecos en el resto del tramo
+      h1[i] = nombre;
+    }
+  }
   filas.push(h1);
 
   const h2 = [];                              // fila 9: sub-encabezados
@@ -187,6 +196,27 @@ test("leerExcel: combina el grupo con el sub-encabezado para armar la clave de c
   assert.equal(f[`Variacion cuotaparte %_${REF_VAR1}`], 0.125);
   assert.equal(f[`Variacion cuotaparte %_${REF_VAR2}`], 0.5);
   assert.equal(f[`Variacion cuotaparte %_${REF_VAR3}`], 1.25);
+  assert.equal(f[`Patrimonio_${REF_PATR}`], 790406962);
+  assert.equal(f["Patrimonio_Actual"], 790407962);
+});
+
+test("leerExcel: con el encabezado disperso (celdas vacías) igual arma todas las columnas", () => {
+  // sheet_to_json deja HUECOS en las celdas vacías y los merges NO se propagan: si el parser
+  // recorriera los encabezados con map/forEach, esas columnas se perderían sin aviso.
+  const conHuecos = leerExcel(excelDePrueba(true));
+  const denso = leerExcel(excelDePrueba(false));
+  const f = conHuecos.listado_fondos[0].fondos[0];
+
+  for (const campo of CAMPOS_ESPERADOS) {
+    assert.ok(campo in f, `falta el campo "${campo}" con el encabezado disperso`);
+  }
+  assert.deepEqual(
+    Object.keys(f).sort(),
+    Object.keys(denso.listado_fondos[0].fondos[0]).sort(),
+    "debe tener las mismas claves que con el encabezado denso"
+  );
+  assert.equal(f["Valor (mil cuotapartes)_Actual"], 1094.438);
+  assert.equal(f[`Variacion cuotaparte %_${REF_VAR1}`], 0.125);
   assert.equal(f[`Patrimonio_${REF_PATR}`], 790406962);
   assert.equal(f["Patrimonio_Actual"], 790407962);
 });
