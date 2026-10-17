@@ -1,0 +1,48 @@
+name: Descarga diaria CAFCI
+
+# Cron externo que dispara la descarga en la API y VERIFICA que la planilla del día haya
+# quedado cargada. Existe porque el cron interno corre dentro del proceso de Render: si el
+# servicio está suspendido o Render lo reinicia justo antes de las 22:30, ese día se pierde
+# en silencio. Acá, si algo falla, el job falla y GitHub avisa por mail.
+#
+# 22:40 ART (UTC-3) = 01:40 UTC del día siguiente. En UTC, de martes a sábado = de lunes a
+# viernes en Argentina.
+on:
+  schedule:
+    - cron: "40 1 * * 2-6"
+  workflow_dispatch: {} # para dispararlo a mano desde la pestaña Actions
+
+jobs:
+  descargar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disparar la descarga (POST /api/descargar)
+        run: |
+          set -euo pipefail
+          url="https://api-cafci-x8m6.onrender.com/api/descargar"
+          # Disparo manual = modo seco (?dry=1): prueba todo el camino sin escribir en la base
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            url="$url?dry=1"
+          fi
+          resp=$(curl -sS -X POST "$url" \
+            -w '\n%{http_code}' -H "Authorization: Bearer ${{ secrets.CRON_TOKEN }}")
+          code=$(printf '%s' "$resp" | tail -n1)
+          body=$(printf '%s' "$resp" | sed '$d')
+          echo "HTTP $code"
+          echo "$body"
+          if [ "$code" != "200" ]; then
+            echo "::error::La descarga falló (HTTP $code): $body"
+            exit 1
+          fi
+
+      - name: Verificar que la planilla del día esté cargada
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          hoy=$(TZ=America/Argentina/Buenos_Aires date +%F)
+          ultima=$(curl -sS "https://api-cafci-x8m6.onrender.com/health/db" | jq -r '.ultimaFecha')
+          echo "esperada: $hoy   ultima en la base: $ultima"
+          if [ "$ultima" != "$hoy" ]; then
+            echo "::error::Datos viejos: la ultima planilla es $ultima y se esperaba $hoy"
+            exit 1
+          fi

@@ -47,6 +47,7 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 | GET | `/api/fechas` | Fechas disponibles, ascendente, `YYYY-MM-DD` |
 | GET | `/health` | **Liveness** — sin acceso a red, responde siempre en < 5 s |
 | GET | `/health/db` | **Readiness** — consulta a Supabase; devuelve 503 si falla |
+| POST | `/api/descargar` | Dispara la descarga a demanda (header `Authorization: Bearer <CRON_TOKEN>`). Con `?dry=1` descarga, parsea y valida **sin escribir** (para probar sin riesgo). Lo usa el cron externo de GitHub Actions |
 
 ### Respuesta de `/api/fondos`
 
@@ -98,6 +99,8 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 | `SUPABASE_URL` | ✔ | Project URL de Supabase |
 | `SUPABASE_KEY` | ✔ | Clave **secreta** (`sb_secret_…` / service role). **Saltea RLS**: sólo se usa del lado servidor |
 | `PORT` | — | Puerto local (default `3000`). Render inyecta `PORT` (default `10000`) |
+| `CRON_TOKEN` | ✔ (cron externo) | Token que protege `POST /api/descargar`. Se carga en Render → Environment **y** como secret en GitHub |
+| `MIN_FONDOS` | — | Mínimo de fondos para guardar una planilla (default `1000`) |
 
 - **Local:** copiar `.env.example` → `.env` y completar. El `.env` está en `.gitignore`.
 - **Render:** panel → servicio → *Environment* → *Add Environment Variable*.
@@ -155,9 +158,12 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
 
 - El servicio **se suspende a los 15 minutos sin tráfico** y tarda ~1 minuto en despertar:
   el primer request del día puede demorar (el dashboard reintenta).
-- **El cron corre dentro del proceso**: si a las 22:30 el servicio está suspendido, la
-  descarga no ocurre. Pendiente: disparar la descarga desde un scheduler externo —
-  Render Cron Jobs y Background Workers **no** están disponibles en plan free.
+- El **cron interno** corre dentro del proceso (lun-vie 22:30 ART): si el servicio está
+  suspendido o Render lo reinicia justo antes, ese día se pierde. Por eso ahora hay un
+  **cron externo** (`.github/workflows/descarga-diaria.yml`) que a las 22:40 ART hace
+  `POST /api/descargar` y **falla el job si la planilla del día no quedó cargada** → GitHub
+  avisa por mail. El ping de UptimeRobot a `/health` sigue siendo útil: evita el cold start
+  de ~1 min en el primer uso del día.
 - El filesystem es efímero: los archivos locales se pierden en cada deploy.
 - No hay historial de logs propio: se consultan en el panel de Render.
 
@@ -217,6 +223,7 @@ Se sigue [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 cafci-api/
 ├── server.js             # API Express + cron de descarga (lo único que corre en Render)
 ├── lib/leerExcel.js      # parser del Excel de CAFCI + fechaHoy / convertirFecha / validarPlanilla
+├── .github/workflows/descarga-diaria.yml   # cron externo (22:40 ART) → POST /api/descargar
 ├── descargar.js          # (local) fuerza una descarga puntual
 ├── cargar-historico.js   # (local) carga masiva desde ./historico
 ├── render.yaml           # documentación inerte del servicio en Render

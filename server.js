@@ -18,29 +18,38 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-async function descargarYGuardar(intento = 1) {
+// Un intento de descarga. Nunca tira: devuelve { ok, ... } para que lo puedan usar
+// tanto el cron interno (con reintentos) como el endpoint POST /api/descargar.
+async function descargarYGuardarUnaVez(dry = false) {
   try {
     const fecha = fechaHoy();
 
-    const { data: existente } = await supabase
-      .from("planillas_cafci")
-      .select("id")
-      .eq("fecha", fecha)
-      .single();
+    if (!dry) {
+      const { data: existente } = await supabase
+        .from("planillas_cafci")
+        .select("id")
+        .eq("fecha", fecha)
+        .single();
 
-    if (existente) {
-      console.log("Ya existe la planilla de hoy:", fecha);
-      return;
+      if (existente) {
+        console.log("Ya existe la planilla de hoy:", fecha);
+        return { ok: true, yaExistia: true, fecha };
+      }
     }
 
-    console.log(`Descargando planilla CAFCI... ${fecha} (intento ${intento})`);
+    console.log(`Descargando planilla CAFCI... ${fecha}`);
     const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer" });
     const { fechaArchivo, referencias, listado_fondos } = leerExcel(response.data);
 
-    // No se guardan planillas vacías o incompletas: si falla, tira error y dispara los reintentos
+    // No se guardan planillas vacías o incompletas
     const totalFondos = validarPlanilla({ fechaArchivo, listado_fondos });
     console.log("fecha archivo:", fechaArchivo);
     console.log("categorias:", listado_fondos.length, "| fondos:", totalFondos);
+
+    if (dry) {
+      console.log("Modo dry: la planilla se parseó y validó, no se guarda");
+      return { ok: true, dry: true, fecha, fechaArchivo, categorias: listado_fondos.length, fondos: totalFondos };
+    }
 
     const datos = { fechaArchivo, referencias, listado_fondos };
 
@@ -50,16 +59,25 @@ async function descargarYGuardar(intento = 1) {
 
     if (error) throw error;
     console.log("Planilla guardada en Supabase:", fecha);
+    return { ok: true, fecha, fechaArchivo, categorias: listado_fondos.length, fondos: totalFondos };
   } catch (error) {
-    console.error(`Error al descargar (intento ${intento}):`, error.message);
-
-    if (intento < 3) {
-      console.log(`Reintentando en 30 minutos...`);
-      setTimeout(() => descargarYGuardar(intento + 1), 30 * 60 * 1000);
-    } else {
-      console.error("Se agotaron los reintentos.");
-    }
+    console.error("Error al descargar:", error.message);
+    return { ok: false, fecha: fechaHoy(), error: error.message };
   }
+}
+
+// Con reintentos cada 30 minutos (lo usa el cron interno de Render)
+async function descargarYGuardar(intento = 1) {
+  const resultado = await descargarYGuardarUnaVez();
+  if (resultado.ok) return resultado;
+
+  if (intento < 3) {
+    console.log(`Reintentando en 30 minutos... (venía del intento ${intento})`);
+    setTimeout(() => descargarYGuardar(intento + 1), 30 * 60 * 1000);
+  } else {
+    console.error("Se agotaron los reintentos.");
+  }
+  return resultado;
 }
 
 // Descarga automática lunes a viernes a las 22:30hs Argentina
@@ -67,6 +85,26 @@ cron.schedule("30 22 * * 1-5", () => {
   descargarYGuardar();
 }, {
   timezone: "America/Argentina/Buenos_Aires",
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/descargar → dispara la descarga a demanda.
+// Lo usa el cron externo de GitHub Actions (.github/workflows/descarga-diaria.yml)
+// y sirve para pruebas manuales. Requiere: Authorization: Bearer <CRON_TOKEN>
+// ─────────────────────────────────────────────────────────────
+app.post("/api/descargar", async (req, res) => {
+  const token = process.env.CRON_TOKEN;
+  if (!token) {
+    return res.status(503).json({ error: "Falta CRON_TOKEN en las variables de entorno del servicio" });
+  }
+  const enviado = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (enviado !== token) {
+    return res.status(401).json({ error: "Token inválido" });
+  }
+  // ?dry=1 → descarga, parsea y valida, pero NO escribe (para probar sin riesgo)
+  const dry = req.query.dry === "1" || req.query.dry === "true";
+  const resultado = await descargarYGuardarUnaVez(dry);
+  res.status(resultado.ok ? 200 : 502).json(resultado);
 });
 
 // Endpoint: último día disponible
@@ -131,7 +169,7 @@ app.get("/", (req, res) => {
     api: pkg.name,
     version: pkg.version,
     node: process.version,
-    endpoints: ["/api/fondos", "/api/fondos/:fecha", "/api/fechas", "/health", "/health/db"],
+    endpoints: ["/api/fondos", "/api/fondos/:fecha", "/api/fechas", "/health", "/health/db", "POST /api/descargar"],
     repo: "https://github.com/magustin28/api-cafci",
   });
 });
