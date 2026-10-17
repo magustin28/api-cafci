@@ -26,6 +26,17 @@ Cada fila guarda el día completo del Excel ya normalizado:
 (`variacion_fecha1`, `variacion_fecha2`, `variacion_fecha3`, `valor_fecha_anterior`,
 `patrimonio_fecha_anterior`).
 
+El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.js` y
+`cargar-historico.js`) y hace tres cosas más que antes:
+
+- **Descarta las filas de leyenda** del Excel (advertencias y notas al pie como
+  `(*) Determinación…`) y las **categorías que quedan sin fondos**, que antes se guardaban
+  como 10 categorías vacías por planilla.
+- **Valida antes de guardar** (`validarPlanilla`): que exista la fecha del archivo, que haya
+  al menos una categoría con fondos y que el total supere un mínimo (env `MIN_FONDOS`,
+  default `1000`). Si no pasa, **no guarda** y el error dispara los reintentos del cron.
+- Expone `fechaHoy()` (fecha ART) y `convertirFecha()` (DD/MM/AA → AAAA-MM-DD).
+
 ## Endpoints
 
 | Método | Ruta | Descripción |
@@ -205,6 +216,7 @@ Se sigue [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 ```
 cafci-api/
 ├── server.js             # API Express + cron de descarga (lo único que corre en Render)
+├── lib/leerExcel.js      # parser del Excel de CAFCI + fechaHoy / convertirFecha / validarPlanilla
 ├── descargar.js          # (local) fuerza una descarga puntual
 ├── cargar-historico.js   # (local) carga masiva desde ./historico
 ├── render.yaml           # documentación inerte del servicio en Render

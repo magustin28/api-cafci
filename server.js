@@ -1,10 +1,10 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const XLSX = require("xlsx");
 const cron = require("node-cron");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
+const { leerExcel, fechaHoy, validarPlanilla } = require("./lib/leerExcel");
 const pkg = require("./package.json");
 
 const startedAt = new Date();
@@ -17,77 +17,6 @@ const EXCEL_URL = "https://api.pub.cafci.org.ar/pb_get";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-function fechaHoy() {
-  return new Date().toLocaleDateString("es-AR", {
-    timeZone: "America/Argentina/Buenos_Aires",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).split("/").reverse().join("-");
-}
-
-function leerExcel(buffer) {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const hoja = workbook.Sheets[workbook.SheetNames[0]];
-  const filas = XLSX.utils.sheet_to_json(hoja, { header: 1 });
-
-  // Fila 9 (índice 8): sub-encabezados con fechas de referencia
-  const filaRefs = filas[8];
-
-  // G9=6, J9=9, K9=10, L9=11, P9=15
-  const referencias = {
-    valor_fecha_anterior:      filaRefs[6]  || null,
-    variacion_fecha1:          filaRefs[9]  || null,
-    variacion_fecha2:          filaRefs[10] || null,
-    variacion_fecha3:          filaRefs[11] || null,
-    patrimonio_fecha_anterior: filaRefs[15] || null,
-  };
-
-  // Fecha del archivo desde E12 (fila índice 11, columna índice 4)
-  const fechaArchivo = filas[11] && filas[11][4] ? filas[11][4] : null;
-
-  // Encabezados en filas 8 y 9 (índice 7 y 8)
-  const encabezado1 = filas[7];
-  const encabezado2 = filas[8];
-
-  let grupoActual = "";
-  const columnas = encabezado1.map((col, i) => {
-    if (col && col.toString().trim() !== "") {
-      grupoActual = col.toString().trim();
-    }
-    const sub = encabezado2[i];
-    if (sub && sub.toString().trim() !== "") {
-      return `${grupoActual}_${sub.toString().trim()}`;
-    }
-    return grupoActual;
-  });
-
-  const listado_fondos = [];
-  let categoriaActual = null;
-
-  for (let i = 10; i < filas.length; i++) {
-    const fila = filas[i];
-    if (!fila || fila.length === 0) continue;
-
-    const valoresNoVacios = fila.filter((v) => v !== undefined && v !== "");
-    if (valoresNoVacios.length === 1) {
-      categoriaActual = { categoria_fondo: fila[0], fondos: [] };
-      listado_fondos.push(categoriaActual);
-      continue;
-    }
-
-    if (categoriaActual) {
-      const fondo = {};
-      columnas.forEach((col, idx) => {
-        if (col) fondo[col] = fila[idx] ?? null;
-      });
-      categoriaActual.fondos.push(fondo);
-    }
-  }
-
-  return { fechaArchivo, referencias, listado_fondos };
-}
 
 async function descargarYGuardar(intento = 1) {
   try {
@@ -108,9 +37,10 @@ async function descargarYGuardar(intento = 1) {
     const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer" });
     const { fechaArchivo, referencias, listado_fondos } = leerExcel(response.data);
 
+    // No se guardan planillas vacías o incompletas: si falla, tira error y dispara los reintentos
+    const totalFondos = validarPlanilla({ fechaArchivo, listado_fondos });
     console.log("fecha archivo:", fechaArchivo);
-    console.log("primera categoria_fondo:", listado_fondos[0].categoria_fondo);
-    console.log("cantidad fondos:", listado_fondos[0].fondos.length);
+    console.log("categorias:", listado_fondos.length, "| fondos:", totalFondos);
 
     const datos = { fechaArchivo, referencias, listado_fondos };
 
