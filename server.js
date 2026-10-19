@@ -5,6 +5,7 @@ const cron = require("node-cron");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
 const { leerExcel, fechaHoy, validarPlanilla } = require("./lib/leerExcel");
+const { slimear } = require("./lib/slim");
 const pkg = require("./package.json");
 
 const startedAt = new Date();
@@ -120,12 +121,17 @@ app.get("/api/fondos", async (req, res) => {
     return res.status(404).json({ error: "Todavía no hay datos disponibles" });
   }
 
+  // ?fields=slim (o ?slim=1) → payload liviano: los 22 campos que usa el dashboard (~15%)
+  const slim = req.query.fields === "slim" || req.query.slim === "1";
   res.json({
     fecha: data.datos.fechaArchivo || data.fecha,
-    datos: {
-      referencias: data.datos.referencias,
-      listado_fondos: data.datos.listado_fondos,
-    },
+    slim: slim || undefined, // en modo completo la clave no se serializa (respuesta idéntica)
+    datos: slim
+      ? slimear(data.datos)
+      : {
+          referencias: data.datos.referencias,
+          listado_fondos: data.datos.listado_fondos,
+        },
   });
 });
 
@@ -141,12 +147,16 @@ app.get("/api/fondos/:fecha", async (req, res) => {
     return res.status(404).json({ error: `No hay datos para la fecha ${req.params.fecha}` });
   }
 
+  const slim = req.query.fields === "slim" || req.query.slim === "1";
   res.json({
     fecha: data.datos.fechaArchivo || data.fecha,
-    datos: {
-      referencias: data.datos.referencias,
-      listado_fondos: data.datos.listado_fondos,
-    },
+    slim: slim || undefined,
+    datos: slim
+      ? slimear(data.datos)
+      : {
+          referencias: data.datos.referencias,
+          listado_fondos: data.datos.listado_fondos,
+        },
   });
 });
 

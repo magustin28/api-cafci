@@ -42,8 +42,8 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 | Método | Ruta | Descripción |
 | --- | --- | --- |
 | GET | `/` | Información del servicio (nombre, versión, endpoints) |
-| GET | `/api/fondos` | Último día disponible |
-| GET | `/api/fondos/:fecha` | Día específico, `YYYY-MM-DD` (ej. `/api/fondos/2026-10-14`) |
+| GET | `/api/fondos` | Último día disponible. Acepta `?fields=slim` (ver *Payload liviano*) |
+| GET | `/api/fondos/:fecha` | Día específico, `YYYY-MM-DD` (ej. `/api/fondos/2026-10-14`). Acepta `?fields=slim` |
 | GET | `/api/fechas` | Fechas disponibles, ascendente, `YYYY-MM-DD` |
 | GET | `/health` | **Liveness** — sin acceso a red, responde siempre en < 5 s |
 | GET | `/health/db` | **Readiness** — consulta a Supabase; devuelve 503 si falla |
@@ -90,7 +90,65 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 > Eso es intencional: Supabase (`jsonb`) reordena las claves alfabéticamente, así que
 > el dashboard no puede depender del orden ni de índices de columna.
 > Si CAFCI cambia un encabezado, cambian las claves → revisar
-> `cafci-dashboard/src/hooks/useFondos.js`.
+> `cafci-dashboard/src/hooks/useFondos.js`. Para evitar ese acoplamiento, usar
+> `?fields=slim`, que devuelve nombres estables.
+
+### Payload liviano: `?fields=slim` (o `?slim=1`)
+
+El dashboard usa **22 de los 47 campos** de cada fondo. Con este parámetro la API devuelve sólo
+esos 22, con **nombres estables** (no dependen de los encabezados del Excel) y cada fondo como
+un **array de valores** en el orden que indica `campos`:
+
+| Respuesta | Sin comprimir | Brotli |
+| --- | --- | --- |
+| Completa (47 campos) | 5.659 KB | 212 KB |
+| `?fields=slim` (22 campos) | **848 KB (15,0%)** | **136 KB (64,0%)** |
+
+*Medido sobre la planilla del 16/10/2026 (4.269 fondos).*
+
+```jsonc
+GET /api/fondos/2026-10-16?fields=slim
+{
+  "fecha": "16/10/26",
+  "slim": true,
+  "datos": {
+    "referencias": { /* igual que en la respuesta completa */ },
+    "campos": ["cnv","fondo","moneda","region","horizonte","varMes","varAnio","varAnual",
+               "patrimonio","socGerente","cafci","valor","valorVarPct","socDepositaria",
+               "honSD","honSG","minimoInversion","patrimonioAnt","valorAnt","valorReexp",
+               "clasificacion","plazoLiq"],
+    "listado_fondos": [
+      { "categoria_fondo": "Renta Variable Peso Argentina",
+        "fondos": [ [1901, "BAVSA Renta Balanceado IX - Clase A", "ARS", "Arg", "Flex", /* … */] ] }
+    ]
+  }
+}
+```
+
+**Sin el parámetro la respuesta es la completa e idéntica a la de siempre** (la clave `slim` no
+se serializa), así que el parámetro es 100% compatible y opt-in.
+
+Campos incluidos — el nombre estable es el contrato con el cliente:
+
+| Estable | Encabezado del Excel | Estable | Encabezado del Excel |
+| --- | --- | --- | --- |
+| `cnv` | Codigo CNV | `valor` | Valor (mil cuotapartes)_Actual |
+| `fondo` | Fondo | `valorVarPct` | Valor (mil cuotapartes)_Variac. % |
+| `moneda` | Moneda Fondo | `socDepositaria` | Sociedad Depositaria |
+| `region` | Clasificación_Región | `honSD` | Honorarios Adm. SD |
+| `horizonte` | Clasificación_Horizonte | `honSG` | Honorarios Adm. SG |
+| `varMes` | Variacion cuotaparte %_`variacion_fecha1` | `minimoInversion` | Mínimo de Inversión |
+| `varAnio` | Variacion cuotaparte %_`variacion_fecha2` | `patrimonioAnt` | Patrimonio_`patrimonio_fecha_anterior` |
+| `varAnual` | Variacion cuotaparte %_`variacion_fecha3` | `valorAnt` | Valor (mil cuotapartes)_`valor_fecha_anterior` |
+| `patrimonio` | Patrimonio_Actual | `valorReexp` | Valor (mil cuotapartes)_Reexp.Pesos |
+| `socGerente` | Sociedad Gerente | `clasificacion` | Código de Clasificación |
+| `cafci` | Código CAFCI | `plazoLiq` | Plazo Liq. *(días, valor crudo)* |
+
+- Las 4 claves con fecha se resuelven con `referencias` (lo que CAFCI publica en la fila 9).
+- `plazoLiq` viaja **crudo** (en días): el formateo para mostrar es del cliente
+  (`cafci-dashboard/src/lib/utils.js`, `formatPlazoLiq`).
+- El nombre de la categoría no es un campo: viaja en `categoria_fondo` de cada categoría.
+- Si algún campo falta en el Excel, se devuelve `null` (no rompe).
 
 ## Variables de entorno
 
@@ -223,7 +281,9 @@ Se sigue [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 npm test        # node --test (runner de Node, sin dependencias nuevas)
 ```
 
-`test/leerExcel.test.js` cubre el parser compartido. El Excel de prueba se genera **en memoria** con la propia librería `xlsx`, replicando la estructura del archivo de CAFCI (fila 8: grupos; fila 9: sub-encabezados con las fechas de referencia; E12: fecha del archivo; de la fila 11 en adelante: categorías y fondos), así que no hay fixture binario que mantener en el repo.
+`test/leerExcel.test.js` cubre el parser compartido. `test/slim.test.js` cubre el payload
+liviano (estructura, nombres estables, resolución de las claves con fecha y **equivalencia
+campo por campo** contra la respuesta completa). El Excel de prueba se genera **en memoria** con la propia librería `xlsx`, replicando la estructura del archivo de CAFCI (fila 8: grupos; fila 9: sub-encabezados con las fechas de referencia; E12: fecha del archivo; de la fila 11 en adelante: categorías y fondos), así que no hay fixture binario que mantener en el repo.
 
 Qué se verifica:
 
@@ -240,11 +300,13 @@ Qué se verifica:
 cafci-api/
 ├── server.js             # API Express + cron de descarga (lo único que corre en Render)
 ├── lib/leerExcel.js      # parser del Excel de CAFCI + fechaHoy / convertirFecha / validarPlanilla
+├── lib/slim.js           # payload liviano: 22 campos estables para el dashboard
 ├── .github/workflows/descarga-diaria.yml   # cron externo (22:40 ART) → POST /api/descargar
 ├── descargar.js          # (local) fuerza una descarga puntual
 ├── cargar-historico.js   # (local) carga masiva desde ./historico
 ├── render.yaml           # documentación inerte del servicio en Render
 ├── test/leerExcel.test.js # tests del parser (npm test, sin dependencias nuevas)
+├── test/slim.test.js     # tests del payload liviano
 ├── .env.example          # plantilla de variables de entorno
 └── package.json
 ```
