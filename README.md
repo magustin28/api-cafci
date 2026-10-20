@@ -220,8 +220,28 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   suspendido o Render lo reinicia justo antes, ese día se pierde. Por eso ahora hay un
   **cron externo** (`.github/workflows/descarga-diaria.yml`) que a las 22:40 ART hace
   `POST /api/descargar` y **falla el job si la planilla del día no quedó cargada** → GitHub
-  avisa por mail. El ping de UptimeRobot a `/health` sigue siendo útil: evita el cold start
-  de ~1 min en el primer uso del día.
+  avisa por mail. El **keep-alive** de UptimeRobot sigue siendo clave: evita el cold start de
+  ~1 min en el primer uso del día **y** que el servicio esté dormido a la hora del cron.
+- **Keep-alive (UptimeRobot):** monitor HTTP cada **5 minutos** contra `GET /health`. Se
+  monitorea `/health` y no `/` a propósito: no toca la base (no gasta egress de Supabase) y
+  sólo un request real provoca el spin-up — Render responde `/robots.txt` en el borde, sin
+  despertar el servicio. Con un ping cada 5 min nunca se llega a los 15 min de inactividad.
+- **Bandwidth: 5 GB/mes** (incluidos en el plan Hobby de Render; Pro 25 GB, Scale 1 TB). Es la
+  cuota a vigilar en Render → *Billing* → *Usage*, porque cada consulta sirve la planilla
+  completa; `?fields=slim` existe justamente para estirar ese límite:
+
+  | Respuesta | Por consulta | Consultas hasta agotar los 5 GB |
+  | --- | --- | --- |
+  | Completa (47 campos) | 5,53 MB | ~926 |
+  | `?fields=slim` (22 campos) | 848 KB | ~6.183 |
+
+  Del lado de Supabase (plan free: 0,5 GB de base y 5 GB de egress/mes) el ahorro es similar:
+  cada lectura de `planillas_cafci` son 5,53 MB de egress con la respuesta completa y 848 KB
+  con `?fields=slim` *(medido en JSON sin comprimir; si el tramo PostgREST → API viaja
+  comprimido, el consumo real es menor)*. En la práctica el navegador baja la planilla **una
+  vez por día y por usuario** (cache en `sessionStorage` por fecha), así que el consumo real
+  queda muy por debajo del límite. El proyecto free de Supabase se pausa tras **1 semana sin
+  actividad**: la carga diaria del cron lo mantiene activo.
 - El filesystem es efímero: los archivos locales se pierden en cada deploy.
 - No hay historial de logs propio: se consultan en el panel de Render.
 
@@ -237,16 +257,35 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   `Authorization: Bearer` (el SDK de JS ya lo maneja; sólo tenerlo en cuenta con otras librerías).
 - Para rotar: crear la clave nueva, actualizar el destino (Render o `.env`), verificar y
   revocar la vieja **al final** — conviven, así que no hay caída.
-- El dashboard usa la clave *publishable* contra Supabase, por lo que las tablas
-  `favoritos`, `suscripciones`, `rescates` y `rescate_detalle` deben tener **RLS habilitado**
-  con políticas `user_id = auth.uid()`.
+- **Modelo de RLS (verificado el 20/10/2026).** Hay dos tramos, cada uno con su clave:
+  - **Dashboard → Supabase** con la clave *publishable* (`sb_publishable_…`, la única que
+    llega al navegador): Auth y las tablas propias del usuario.
+  - **API → Supabase** con la clave *secreta* (`SUPABASE_KEY`), que saltea RLS.
+
+  El RLS está activo en todas las tablas y **la clave publishable no ve ninguna fila**:
+  `planillas_cafci` no tiene *ninguna* política (deny-all: sólo la clave secreta la lee) y las
+  tablas del dashboard tienen políticas `user_id = auth.uid()`, así que cada usuario ve
+  únicamente sus filas cuando está logueado.
+
+  Comprobado contra la API REST de PostgREST (`GET /rest/v1/<tabla>?select=*&limit=3`) con las
+  dos claves:
+
+  | Tabla | Publishable (dashboard) | Secreta (API) |
+  | --- | --- | --- |
+  | `planillas_cafci` | 200 · **0 filas** | 200 · 3 filas |
+  | `favoritos` | 200 · **0 filas** | 200 · 3 filas |
+  | `suscripciones` | 200 · **0 filas** | 200 · 3 filas |
+  | `rescates` | 200 · **0 filas** | 200 · 3 filas |
+  | `rescate_detalles` | 200 · **0 filas** | 200 · 3 filas |
+
+  O sea: aunque la clave publishable es pública por diseño, por sí sola no expone ningún dato.
 - `cors()` está abierto a cualquier origen (a evaluar: restringirlo a GitHub Pages).
 - No hay rate limiting en los endpoints públicos.
 
 ## Convención de nombres
 
 Los objetos de la base van en **minúsculas `snake_case`**, con las tablas en plural:
-`planillas_cafci`, `favoritos`, `suscripciones`, `rescates`, `rescate_detalle`.
+`planillas_cafci`, `favoritos`, `suscripciones`, `rescates`, `rescate_detalles`.
 En Postgres un identificador creado con mayúsculas queda *case-sensitive* y obliga a
 entrecomillarlo en cada consulta (`select * from "planillas_cafci"`), y es la causa típica del
 error `relation "planillascafci" does not exist` cuando alguien se olvida de las comillas.
