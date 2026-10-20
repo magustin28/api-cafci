@@ -22,6 +22,13 @@ cafci-dashboard (GitHub Pages)
 
 Cada fila guarda el día completo del Excel ya normalizado:
 `{ fechaArchivo, referencias, listado_fondos: [{ categoria_fondo, fondos: [ … ] }] }`.
+
+La clave de la fila (`fecha`) es la **fecha del propio archivo** (`datos.fechaArchivo`), no la
+fecha en que se corrió la descarga (`lib/planilla.js`). Eso hace que el guardado sea
+**idempotente**: si CAFCI todavía no publicó los cierres del día (feriado, o una corrida que
+llegó tarde) el archivo sigue trayendo la planilla del último día hábil y se **actualiza esa
+fila**, sin crear una fila con la fecha equivocada. Volver a descargar es inofensivo: si la
+planilla ya está guardada y no cambió, no escribe.
 `referencias` contiene las fechas de comparación leídas del propio Excel
 (`variacion_fecha1`, `variacion_fecha2`, `variacion_fecha3`, `valor_fecha_anterior`,
 `patrimonio_fecha_anterior`).
@@ -47,7 +54,7 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 | GET | `/api/fechas` | Fechas disponibles, ascendente, `YYYY-MM-DD` |
 | GET | `/health` | **Liveness** — sin acceso a red, responde siempre en < 5 s |
 | GET | `/health/db` | **Readiness** — consulta a Supabase; devuelve 503 si falla |
-| POST | `/api/descargar` | Dispara la descarga a demanda (header `Authorization: Bearer <CRON_TOKEN>`). Con `?dry=1` descarga, parsea y valida **sin escribir** (para probar sin riesgo). Lo usa el cron externo de GitHub Actions |
+| POST | `/api/descargar` | Dispara la descarga a demanda (header `Authorization: Bearer <CRON_TOKEN>`). Con `?dry=1` descarga, parsea y valida **sin escribir** (para probar sin riesgo) y devuelve la **fecha real de la planilla** publicada. Guarda bajo la fecha del archivo y es idempotente: responde `estado` = `creada` / `actualizada` / `sin cambios`. Lo usa el cron externo de GitHub Actions |
 
 ### Respuesta de `/api/fondos`
 
@@ -218,10 +225,19 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   el primer request del día puede demorar (el dashboard reintenta).
 - El **cron interno** corre dentro del proceso (lun-vie 22:30 ART): si el servicio está
   suspendido o Render lo reinicia justo antes, ese día se pierde. Por eso ahora hay un
-  **cron externo** (`.github/workflows/descarga-diaria.yml`) que a las 22:40 ART hace
-  `POST /api/descargar` y **falla el job si la planilla del día no quedó cargada** → GitHub
-  avisa por mail. El **keep-alive** de UptimeRobot sigue siendo clave: evita el cold start de
-  ~1 min en el primer uso del día **y** que el servicio esté dormido a la hora del cron.
+  **cron externo** (`.github/workflows/descarga-diaria.yml`) a las 22:40 ART que hace
+  `POST /api/descargar` y después verifica que **la base esté al día con la planilla publicada**
+  → si no, falla el job y GitHub avisa por mail. El **keep-alive** de UptimeRobot sigue siendo
+  clave: evita el cold start de ~1 min en el primer uso del día **y** que el servicio esté
+  dormido a la hora del cron.
+- ⚠️ **Los `schedule` de GitHub Actions no son puntuales**: corren en una cola compartida y la
+  documentación avisa que se pueden **demorar horas** en períodos de alta carga (o descartar el
+  job). El 20/10/2026 la corrida pautada para las 22:40 ART se ejecutó a las **03:34 ART del día
+  siguiente** (+294 min). Por eso: (a) el guardado es **idempotente** (la clave es la fecha del
+  archivo, correr tarde no rompe nada), (b) la verificación se hace contra **la planilla
+  publicada** y no contra "hoy", y (c) el cron **interno** (22:30 ART) sigue siendo el
+  principal. Además los schedules se **desactivan solos tras 60 días sin actividad** en el
+  repo: conviene mirar la pestaña *Actions* cada tanto (cualquier push los mantiene vivos).
 - **Keep-alive (UptimeRobot):** monitor HTTP cada **5 minutos** contra `GET /health`. Se
   monitorea `/health` y no `/` a propósito: no toca la base (no gasta egress de Supabase) y
   sólo un request real provoca el spin-up — Render responde `/robots.txt` en el borde, sin
@@ -322,7 +338,10 @@ npm test        # node --test (runner de Node, sin dependencias nuevas)
 
 `test/leerExcel.test.js` cubre el parser compartido. `test/slim.test.js` cubre el payload
 liviano (estructura, nombres estables, resolución de las claves con fecha y **equivalencia
-campo por campo** contra la respuesta completa). El Excel de prueba se genera **en memoria** con la propia librería `xlsx`, replicando la estructura del archivo de CAFCI (fila 8: grupos; fila 9: sub-encabezados con las fechas de referencia; E12: fecha del archivo; de la fila 11 en adelante: categorías y fondos), así que no hay fixture binario que mantener en el repo.
+campo por campo** contra la respuesta completa). `test/planilla.test.js` cubre `lib/planilla.js`:
+que la clave sea la **fecha del archivo** (y no la del run) y los casos crear / actualizar / sin
+cambios, incluidos los dos incidentes reales: la corrida que cruzó la medianoche (20/10) y los
+feriados. El Excel de prueba se genera **en memoria** con la propia librería `xlsx`, replicando la estructura del archivo de CAFCI (fila 8: grupos; fila 9: sub-encabezados con las fechas de referencia; E12: fecha del archivo; de la fila 11 en adelante: categorías y fondos), así que no hay fixture binario que mantener en el repo.
 
 Qué se verifica:
 
@@ -339,6 +358,7 @@ Qué se verifica:
 cafci-api/
 ├── server.js             # API Express + cron de descarga (lo único que corre en Render)
 ├── lib/leerExcel.js      # parser del Excel de CAFCI + fechaHoy / convertirFecha / validarPlanilla
+├── lib/planilla.js       # clave de la fila (fecha del archivo) + guardado idempotente
 ├── lib/slim.js           # payload liviano: 22 campos estables para el dashboard
 ├── .github/workflows/descarga-diaria.yml   # cron externo (22:40 ART) → POST /api/descargar
 ├── descargar.js          # (local) fuerza una descarga puntual
@@ -346,6 +366,7 @@ cafci-api/
 ├── render.yaml           # documentación inerte del servicio en Render
 ├── test/leerExcel.test.js # tests del parser (npm test, sin dependencias nuevas)
 ├── test/slim.test.js     # tests del payload liviano
+├── test/planilla.test.js # tests de la clave del archivo y del guardado idempotente
 ├── .env.example          # plantilla de variables de entorno
 └── package.json
 ```

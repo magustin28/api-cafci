@@ -5,6 +5,7 @@ const cron = require("node-cron");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
 const { leerExcel, fechaHoy, validarPlanilla } = require("./lib/leerExcel");
+const { claveDePlanilla, guardarPlanilla } = require("./lib/planilla");
 const { slimear } = require("./lib/slim");
 const pkg = require("./package.json");
 
@@ -21,46 +22,35 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Un intento de descarga. Nunca tira: devuelve { ok, ... } para que lo puedan usar
 // tanto el cron interno (con reintentos) como el endpoint POST /api/descargar.
+//
+// La fila se guarda bajo la FECHA REAL DEL ARCHIVO (lib/planilla), no bajo la fecha del run:
+// una corrida retrasada (el schedule de GitHub Actions puede llegar horas tarde) o un feriado
+// no pueden crear filas con datos de otro día, y repetir la descarga es inofensivo.
 async function descargarYGuardarUnaVez(dry = false) {
   try {
-    const fecha = fechaHoy();
+    // Sólo para los logs: la clave de la fila la define el archivo.
+    const run = fechaHoy();
 
-    if (!dry) {
-      const { data: existente } = await supabase
-        .from("planillas_cafci")
-        .select("id")
-        .eq("fecha", fecha)
-        .single();
-
-      if (existente) {
-        console.log("Ya existe la planilla de hoy:", fecha);
-        return { ok: true, yaExistia: true, fecha };
-      }
-    }
-
-    console.log(`Descargando planilla CAFCI... ${fecha}`);
+    console.log(`Descargando planilla CAFCI... (run del ${run})`);
     const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer" });
     const { fechaArchivo, referencias, listado_fondos } = leerExcel(response.data);
 
     // No se guardan planillas vacías o incompletas
     const totalFondos = validarPlanilla({ fechaArchivo, listado_fondos });
-    console.log("fecha archivo:", fechaArchivo);
+    const fecha = claveDePlanilla({ fechaArchivo }); // la fecha REAL de la planilla
+    console.log("fecha archivo:", fechaArchivo, "→ clave:", fecha);
     console.log("categorias:", listado_fondos.length, "| fondos:", totalFondos);
+
+    const datos = { fechaArchivo, referencias, listado_fondos };
 
     if (dry) {
       console.log("Modo dry: la planilla se parseó y validó, no se guarda");
       return { ok: true, dry: true, fecha, fechaArchivo, categorias: listado_fondos.length, fondos: totalFondos };
     }
 
-    const datos = { fechaArchivo, referencias, listado_fondos };
-
-    const { error } = await supabase
-      .from("planillas_cafci")
-      .insert({ fecha, datos });
-
-    if (error) throw error;
-    console.log("Planilla guardada en Supabase:", fecha);
-    return { ok: true, fecha, fechaArchivo, categorias: listado_fondos.length, fondos: totalFondos };
+    const { estado } = await guardarPlanilla(supabase, datos);
+    console.log(`Planilla ${estado} en Supabase:`, fecha);
+    return { ok: true, fecha, fechaArchivo, estado, categorias: listado_fondos.length, fondos: totalFondos };
   } catch (error) {
     console.error("Error al descargar:", error.message);
     return { ok: false, fecha: fechaHoy(), error: error.message };
