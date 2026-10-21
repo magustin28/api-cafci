@@ -36,7 +36,6 @@ jobs:
           fi
 
       - name: Verificar que la base esté al día con el archivo publicado
-        if: ${{ github.event_name != 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           api="https://api-cafci-x8m6.onrender.com"
@@ -44,10 +43,27 @@ jobs:
           # escribir). NO se compara contra "hoy": si este job corre tarde (GitHub puede demorar
           # el schedule horas) o si es feriado, la planilla publicada sigue siendo la del último
           # día hábil y eso es correcto. Lo que no puede pasar es que la base quede ATRÁS.
-          archivo=$(curl -sS -X POST "$api/api/descargar?dry=1" \
-            -H "Authorization: Bearer ${{ secrets.CRON_TOKEN }}" | jq -r '.fecha')
+          # Corre también en workflow_dispatch: el modo seco no escribe nada, así que el chequeo
+          # se puede probar a mano desde la pestaña Actions.
+          dry=$(curl -sS -X POST "$api/api/descargar?dry=1" \
+            -H "Authorization: Bearer ${{ secrets.CRON_TOKEN }}")
+          # Si la descarga falló, el cuerpo trae ok:false y una fecha de relleno (fechaHoy): no
+          # sirve para comparar, así que se corta acá en vez de dar un resultado engañoso.
+          if [ "$(printf '%s' "$dry" | jq -r '.ok')" != "true" ]; then
+            echo "::error::El modo seco falló, no se puede verificar: $dry"
+            exit 1
+          fi
+          archivo=$(printf '%s' "$dry" | jq -r '.fecha')
           ultima=$(curl -sS "$api/health/db" | jq -r '.ultimaFecha')
-          esperada=$(printf '%s' "$archivo" | awk -F/ '{printf "20%02d-%02d-%02d", $3, $2, $1}')
+          # /api/descargar devuelve la clave de la fila, o sea ISO (AAAA-MM-DD, igual que
+          # /health/db). OJO: /api/fondos sí devuelve datos.fechaArchivo, que es DD/MM/AA.
+          # Se aceptan los dos formatos para que el chequeo no se rompa si la API cambia.
+          esperada="$archivo"
+          if [[ "$archivo" == */* ]]; then
+            IFS="/" read -r dd mm aa <<< "$archivo"
+            if [ "${#aa}" -eq 2 ]; then aa="20$aa"; fi
+            esperada=$(printf '%s-%s-%s' "$aa" "$mm" "$dd")
+          fi
           echo "planilla publicada: $archivo ($esperada)   última en la base: $ultima"
           if [ "$ultima" != "$esperada" ]; then
             echo "::error::La base está atrás: la última planilla guardada es $ultima y la publicada es $esperada"

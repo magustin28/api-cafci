@@ -54,13 +54,13 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 | GET | `/api/fechas` | Fechas disponibles, ascendente, `YYYY-MM-DD` |
 | GET | `/health` | **Liveness** — sin acceso a red, responde siempre en < 5 s |
 | GET | `/health/db` | **Readiness** — consulta a Supabase; devuelve 503 si falla |
-| POST | `/api/descargar` | Dispara la descarga a demanda (header `Authorization: Bearer <CRON_TOKEN>`). Con `?dry=1` descarga, parsea y valida **sin escribir** (para probar sin riesgo) y devuelve la **fecha real de la planilla** publicada. Guarda bajo la fecha del archivo y es idempotente: responde `estado` = `creada` / `actualizada` / `sin cambios`. Lo usa el cron externo de GitHub Actions |
+| POST | `/api/descargar` | Dispara la descarga a demanda (header `Authorization: Bearer <CRON_TOKEN>`). Con `?dry=1` descarga, parsea y valida **sin escribir** (para probar sin riesgo) y devuelve en `fecha` la **fecha real de la planilla** publicada, en `YYYY-MM-DD` (la misma clave de la fila que reporta `/health/db`). Guarda bajo la fecha del archivo y es idempotente: responde `estado` = `creada` / `actualizada` / `sin cambios`. Lo usa el cron externo de GitHub Actions |
 
 ### Respuesta de `/api/fondos`
 
 ```jsonc
 {
-  "fecha": "14/10/26",                       // datos.fechaArchivo || columna fecha
+  "fecha": "14/10/26",                       // datos.fechaArchivo, DD/MM/AA (OJO: /api/descargar y /health/db usan AAAA-MM-DD)
   "datos": {
     "referencias": {
       "variacion_fecha1": "30/09/26",
@@ -227,7 +227,11 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   suspendido o Render lo reinicia justo antes, ese día se pierde. Por eso ahora hay un
   **cron externo** (`.github/workflows/descarga-diaria.yml`) a las 22:40 ART que hace
   `POST /api/descargar` y después verifica que **la base esté al día con la planilla publicada**
-  → si no, falla el job y GitHub avisa por mail. El **keep-alive** de UptimeRobot sigue siendo
+  → si no, falla el job y GitHub avisa por mail. La verificación compara dos fechas en
+  `YYYY-MM-DD`: la de `/api/descargar?dry=1` (clave de la fila) contra la de `/health/db`.
+  ⚠️ Ojo con los formatos al tocar ese chequeo: `/api/fondos` devuelve `datos.fechaArchivo` en
+  `DD/MM/AA`, así que **no** es la misma representación (el 21/10/2026 el chequeo se rompió por
+  esto y el job falló aunque la base estaba al día). El **keep-alive** de UptimeRobot sigue siendo
   clave: evita el cold start de ~1 min en el primer uso del día **y** que el servicio esté
   dormido a la hora del cron.
 - ⚠️ **Los `schedule` de GitHub Actions no son puntuales**: corren en una cola compartida y la
