@@ -238,6 +238,19 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   publicada** y no contra "hoy", y (c) el cron **interno** (22:30 ART) sigue siendo el
   principal. Además los schedules se **desactivan solos tras 60 días sin actividad** en el
   repo: conviene mirar la pestaña *Actions* cada tanto (cualquier push los mantiene vivos).
+- 📚 **Recarga histórica: CAFCI no publica el pasado.** Su API pública
+  (`https://api.pub.cafci.org.ar/pb_get`) devuelve **siempre la última planilla** y **no acepta
+  parámetro de fecha**: se probaron 15 variantes (`?fecha=`, `?date=`, `?d=`, `?pd=`, `?periodo=`,
+  `?fechaDesde=`, …) y todas responden el mismo archivo (idéntico tamaño); el resto de las rutas
+  responde `403 {"error":"Route not allowed"}` (CloudFront con lista blanca, incluidos
+  `/pb_get/20261019`, `/planillas/...` y `/api-docs`), el botón del sitio usa
+  `pb_get?d=Date.now()` (sólo *cache-buster*) y la API de socios (`api.cafci.org.ar/pb_get`) pide
+  `Bearer realm="Users"`. Internet Archive tiene **una sola** captura (26/10/2025) y los "Informes
+  Estadísticos" son PDF mensuales. Conclusión: **la base arranca donde arrancó el cron** y
+  `historico/` sirve sólo para archivos guardados a mano (con cualquier nombre: la fecha la manda
+  la celda E12). Lo único que la API permite aprovechar es el **nombre del archivo** que manda en
+  `Content-Disposition` (`20261019_Planilla_Diaria_A.xlsx`): cada descarga lo **cruza con E12** y,
+  si no coinciden, deja un `⚠️` en los logs (manda E12); si E12 viniera vacío, lo usa como fecha.
 - **Keep-alive (UptimeRobot):** monitor HTTP cada **5 minutos** contra `GET /health`. Se
   monitorea `/health` y no `/` a propósito: no toca la base (no gasta egress de Supabase) y
   sólo un request real provoca el spin-up — Render responde `/robots.txt` en el borde, sin

@@ -3,7 +3,8 @@
 // feriados) además de los casos crear / actualizar / sin cambios.
 const test = require("node:test");
 const assert = require("node:assert");
-const { claveDePlanilla, guardarPlanilla } = require("../lib/planilla.js");
+const { claveDePlanilla, guardarPlanilla, resolverFechaArchivo } = require("../lib/planilla.js");
+const { fechaDelNombre } = require("../lib/leerExcel.js");
 
 // Cliente Supabase falso: imita las dos cadenas que usa el helper
 //   .from(t).select(x).eq(c, v).maybeSingle()   y   .from(t).upsert(fila, opciones)
@@ -100,4 +101,43 @@ test("una fecha de archivo inválida no llega a guardar", async () => {
   const sb = clienteFalso();
   await assert.rejects(() => guardarPlanilla(sb, { fechaArchivo: "sin fecha" }), /Formato de fecha inválido/);
   assert.strictEqual(sb.ops.upserts.length, 0);
+});
+
+// ── Nombre del archivo ────────────────────────────────────────────────────────
+// CAFCI no acepta parámetros de fecha: sólo publica la última planilla, pero la respuesta trae el
+// nombre real del archivo (20261019_Planilla_Diaria_A.xlsx) en Content-Disposition. Es la única
+// pista de fecha aparte de E12 y se usa para verificarla (y para no perder un archivo sin E12).
+
+test("fechaDelNombre lee la fecha del nombre del archivo de CAFCI", () => {
+  assert.strictEqual(fechaDelNombre('attachment; filename="20261019_Planilla_Diaria_A.xlsx"'), "19/10/2026");
+  assert.strictEqual(fechaDelNombre("20260102_Planilla_Diaria_A.xlsx"), "02/01/2026");
+});
+
+test("fechaDelNombre devuelve null si no hay una fecha válida", () => {
+  assert.strictEqual(fechaDelNombre("Planilla_Diaria_A.xlsx"), null);
+  assert.strictEqual(fechaDelNombre("99999999_Planilla.xlsx"), null); // mes y día imposibles
+  assert.strictEqual(fechaDelNombre(null), null);
+  assert.strictEqual(fechaDelNombre(undefined), null);
+});
+
+test("resolverFechaArchivo no avisa si el nombre coincide con E12", () => {
+  const r = resolverFechaArchivo({ fechaArchivo: "19/10/26" }, 'attachment; filename="20261019_Planilla_Diaria_A.xlsx"');
+  assert.deepStrictEqual(r, { fechaArchivo: "19/10/26", aviso: null });
+});
+
+test("resolverFechaArchivo avisa si el nombre y E12 no coinciden (y usa E12)", () => {
+  const r = resolverFechaArchivo({ fechaArchivo: "19/10/26" }, "20261020_Planilla_Diaria_A.xlsx");
+  assert.strictEqual(r.fechaArchivo, "19/10/26");
+  assert.match(r.aviso, /se usa E12/);
+});
+
+test("resolverFechaArchivo completa la fecha con el nombre si E12 viene vacío", () => {
+  const r = resolverFechaArchivo({ fechaArchivo: null }, "20261019_Planilla_Diaria_A.xlsx");
+  assert.strictEqual(r.fechaArchivo, "19/10/2026");
+  assert.match(r.aviso, /E12 vacío/);
+});
+
+test("resolverFechaArchivo tira error si no hay ninguna fecha disponible", () => {
+  assert.throws(() => resolverFechaArchivo({ fechaArchivo: null }, "planilla.xlsx"), /no trae la fecha del archivo/);
+  assert.throws(() => resolverFechaArchivo(null, null), /no trae la fecha del archivo/);
 });

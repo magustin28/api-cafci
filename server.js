@@ -5,7 +5,7 @@ const cron = require("node-cron");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
 const { leerExcel, fechaHoy, validarPlanilla } = require("./lib/leerExcel");
-const { claveDePlanilla, guardarPlanilla } = require("./lib/planilla");
+const { claveDePlanilla, guardarPlanilla, resolverFechaArchivo } = require("./lib/planilla");
 const { slimear } = require("./lib/slim");
 const pkg = require("./package.json");
 
@@ -33,24 +33,29 @@ async function descargarYGuardarUnaVez(dry = false) {
 
     console.log(`Descargando planilla CAFCI... (run del ${run})`);
     const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer" });
-    const { fechaArchivo, referencias, listado_fondos } = leerExcel(response.data);
+    const leida = leerExcel(response.data);
+
+    // CAFCI manda el nombre real del archivo en Content-Disposition (ej. 20261019_Planilla_Diaria_A.xlsx):
+    // sirve para confirmar la fecha de E12 y para completarla si viniera vacía (E12 manda siempre).
+    const { fechaArchivo, aviso } = resolverFechaArchivo(leida, response.headers["content-disposition"]);
+    if (aviso) console.warn("⚠️ ", aviso);
 
     // No se guardan planillas vacías o incompletas
-    const totalFondos = validarPlanilla({ fechaArchivo, listado_fondos });
+    const totalFondos = validarPlanilla({ fechaArchivo, listado_fondos: leida.listado_fondos });
     const fecha = claveDePlanilla({ fechaArchivo }); // la fecha REAL de la planilla
     console.log("fecha archivo:", fechaArchivo, "→ clave:", fecha);
-    console.log("categorias:", listado_fondos.length, "| fondos:", totalFondos);
+    console.log("categorias:", leida.listado_fondos.length, "| fondos:", totalFondos);
 
-    const datos = { fechaArchivo, referencias, listado_fondos };
+    const datos = { fechaArchivo, referencias: leida.referencias, listado_fondos: leida.listado_fondos };
 
     if (dry) {
       console.log("Modo dry: la planilla se parseó y validó, no se guarda");
-      return { ok: true, dry: true, fecha, fechaArchivo, categorias: listado_fondos.length, fondos: totalFondos };
+      return { ok: true, dry: true, fecha, fechaArchivo, categorias: datos.listado_fondos.length, fondos: totalFondos, ...(aviso ? { aviso } : {}) };
     }
 
     const { estado } = await guardarPlanilla(supabase, datos);
     console.log(`Planilla ${estado} en Supabase:`, fecha);
-    return { ok: true, fecha, fechaArchivo, estado, categorias: listado_fondos.length, fondos: totalFondos };
+    return { ok: true, fecha, fechaArchivo, estado, categorias: datos.listado_fondos.length, fondos: totalFondos, ...(aviso ? { aviso } : {}) };
   } catch (error) {
     console.error("Error al descargar:", error.message);
     return { ok: false, fecha: fechaHoy(), error: error.message };
