@@ -238,19 +238,36 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   publicada** y no contra "hoy", y (c) el cron **interno** (22:30 ART) sigue siendo el
   principal. Además los schedules se **desactivan solos tras 60 días sin actividad** en el
   repo: conviene mirar la pestaña *Actions* cada tanto (cualquier push los mantiene vivos).
-- 📚 **Recarga histórica: CAFCI no publica el pasado.** Su API pública
+- 📚 **Recarga histórica: CAFCI no publica el pasado, pero la CNV sí lo archiva.** La API de CAFCI
   (`https://api.pub.cafci.org.ar/pb_get`) devuelve **siempre la última planilla** y **no acepta
-  parámetro de fecha**: se probaron 15 variantes (`?fecha=`, `?date=`, `?d=`, `?pd=`, `?periodo=`,
-  `?fechaDesde=`, …) y todas responden el mismo archivo (idéntico tamaño); el resto de las rutas
-  responde `403 {"error":"Route not allowed"}` (CloudFront con lista blanca, incluidos
-  `/pb_get/20261019`, `/planillas/...` y `/api-docs`), el botón del sitio usa
-  `pb_get?d=Date.now()` (sólo *cache-buster*) y la API de socios (`api.cafci.org.ar/pb_get`) pide
-  `Bearer realm="Users"`. Internet Archive tiene **una sola** captura (26/10/2025) y los "Informes
-  Estadísticos" son PDF mensuales. Conclusión: **la base arranca donde arrancó el cron** y
-  `historico/` sirve sólo para archivos guardados a mano (con cualquier nombre: la fecha la manda
-  la celda E12). Lo único que la API permite aprovechar es el **nombre del archivo** que manda en
-  `Content-Disposition` (`20261019_Planilla_Diaria_A.xlsx`): cada descarga lo **cruza con E12** y,
-  si no coinciden, deja un `⚠️` en los logs (manda E12); si E12 viniera vacío, lo usa como fecha.
+  parámetro de fecha** (probadas 15 variantes: `?fecha=`, `?date=`, `?d=`, `?pd=`, `?periodo=`,
+  `?fechaDesde=`, … todas devuelven el mismo archivo; el resto de las rutas responde
+  `403 {"error":"Route not allowed"}` por la lista blanca de CloudFront y la API de socios
+  `api.cafci.org.ar/pb_get` pide `Bearer realm="Users"`).
+  **La CNV, en cambio, archiva el mismo archivo** —idéntico nombre `AAAAMMDD_Planilla_Diaria_A.xlsx`—
+  y lo indexa por fecha en una página pública: `SitioWeb/FondosComunesInversion/CuotaPartes`
+  (1.650 fechas, desde enero 2020; cada día con sus revisiones). El flujo que usa
+  `cargar-historico-cnv.js`, sin credenciales:
+  1. índice: la página de cuotapartes (trae todas las filas, ocultas tras "VER MÁS");
+  2. metadata: `aif2.cnv.gov.ar/Presentations/publicview/<GUID>` → nombre del archivo + GUID del blob + hash;
+  3. valet key **pública**: `aif2.cnv.gov.ar/api/ValetKeyProvider/GetPublicValetKey/<blob>?operation=DownloadBlob%2F`
+     (la ruta sin `Public` —`GetValetKey`— redirige a ADFS y exige login);
+  4. archivo: **`POST`** a `blob.cnv.gov.ar/BlobWebService.svc/DownloadBlob/<blob>` con el header
+     `ValetKey` (¡con GET responde 400!).
+
+  ```bash
+  npm run historico-cnv -- 2026-01-01              # desde esa fecha hasta hoy
+  npm run historico-cnv -- 2026-01-01 2026-03-31   # rango
+  npm run historico-cnv -- 2026-01-01 --dry        # no escribe en Supabase
+  npm run historico-cnv -- 2026-01-01 --guardar    # además deja los .xlsx en historico/
+  npm run historico-cnv -- 2026-01-01 --forzar     # rebaja aunque la fila ya esté
+  ```
+
+  Es idempotente y saltea las fechas que ya están en la base. `historico/` (gitignoreada) sigue
+  sirviendo para archivos guardados a mano: con cualquier nombre, porque la fecha la manda la celda
+  E12. En todos los casos el **nombre del archivo** (el que manda CAFCI en `Content-Disposition` o
+  el del `.xlsx`) se **cruza con E12**: si no coinciden queda un `⚠️` en los logs (manda E12) y, si
+  E12 viniera vacío, se usa como fecha.
 - **Keep-alive (UptimeRobot):** monitor HTTP cada **5 minutos** contra `GET /health`. Se
   monitorea `/health` y no `/` a propósito: no toca la base (no gasta egress de Supabase) y
   sólo un request real provoca el spin-up — Render responde `/robots.txt` en el borde, sin
@@ -376,6 +393,7 @@ cafci-api/
 ├── .github/workflows/descarga-diaria.yml   # cron externo (22:40 ART) → POST /api/descargar
 ├── descargar.js          # (local) fuerza una descarga puntual
 ├── cargar-historico.js   # (local) carga masiva desde ./historico
+├── cargar-historico-cnv.js # (local) recarga el histórico desde los documentos públicos de la CNV
 ├── render.yaml           # documentación inerte del servicio en Render
 ├── test/leerExcel.test.js # tests del parser (npm test, sin dependencias nuevas)
 ├── test/slim.test.js     # tests del payload liviano

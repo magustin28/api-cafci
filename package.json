@@ -13,7 +13,8 @@
     "start": "node server.js",
     "descargar": "node descargar.js",
     "historico": "node cargar-historico.js",
-    "check": "node --check server.js && node --check descargar.js && node --check cargar-historico.js",
+    "historico-cnv": "node cargar-historico-cnv.js",
+    "check": "node --check server.js && node --check descargar.js && node --check cargar-historico.js && node --check cargar-historico-cnv.js",
     "test": "node --test"
   },
   "dependencies": {
