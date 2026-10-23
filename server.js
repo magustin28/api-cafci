@@ -32,7 +32,10 @@ async function descargarYGuardarUnaVez(dry = false) {
     const run = fechaHoy();
 
     console.log(`Descargando planilla CAFCI... (run del ${run})`);
-    const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer" });
+    // timeout: sin él, si CAFCI deja la conexión abierta el request queda colgado indefinidamente
+    // (axios no tiene timeout por defecto) y el job del cron externo también. La planilla pesa
+    // ~950 KB: 60 s es holgado.
+    const response = await axios.get(EXCEL_URL, { responseType: "arraybuffer", timeout: 60 * 1000 });
     const leida = leerExcel(response.data);
 
     // CAFCI manda el nombre real del archivo en Content-Disposition (ej. 20261019_Planilla_Diaria_A.xlsx):
