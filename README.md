@@ -280,18 +280,25 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   cuota a vigilar en Render → *Billing* → *Usage*, porque cada consulta sirve la planilla
   completa; `?fields=slim` existe justamente para estirar ese límite:
 
-  | Respuesta | Por consulta | Consultas hasta agotar los 5 GB |
-  | --- | --- | --- |
-  | Completa (47 campos) | 5,53 MB | ~926 |
-  | `?fields=slim` (22 campos) | 848 KB | ~6.183 |
+  | Respuesta | Por consulta | Con brotli | Consultas hasta agotar los 5 GB |
+  | --- | --- | --- | --- |
+  | Completa (47 campos) | 5,53 MB | 212 KB | ~926 → **~24.700** |
+  | `?fields=slim` (22 campos) | 848 KB | 136 KB | ~6.183 → **~38.500** |
 
+  La columna *por consulta* es el JSON sin comprimir (el piso conservador): en la práctica
+  Render sirve las respuestas con brotli, así que lo que viaja de verdad es lo de la columna
+  *con brotli* (los tamaños comprimidos pueden variar unos KB según el algoritmo que negocie
+  el cliente —brotli o gzip—). Medido con `curl`: aceptando compresión, una descarga real de
+  `?fields=slim` pesa 179 KB con gzip y 136 KB con brotli.
   Del lado de Supabase (plan free: 0,5 GB de base y 5 GB de egress/mes) el ahorro es similar:
-  cada lectura de `planillas_cafci` son 5,53 MB de egress con la respuesta completa y 848 KB
-  con `?fields=slim` *(medido en JSON sin comprimir; si el tramo PostgREST → API viaja
-  comprimido, el consumo real es menor)*. En la práctica el navegador baja la planilla **una
-  vez por día y por usuario** (cache en `sessionStorage` por fecha), así que el consumo real
-  queda muy por debajo del límite. El proyecto free de Supabase se pausa tras **1 semana sin
-  actividad**: la carga diaria del cron lo mantiene activo.
+  cada lectura de `planillas_cafci` son 5,53 MB de jsonb sin comprimir con la respuesta
+  completa y 848 KB con `?fields=slim`; PostgREST también comprime el tramo Supabase → API (no
+  se verificó con headers, pero una lectura de la fila completa medida desde el cliente tarda
+  menos que un `select` de una sola columna, lo que indica que el tamaño no manda).
+  En la práctica el navegador baja la planilla **como mucho una vez por hora y por pestaña**
+  (la cache de `sessionStorage` vence a los 60 min: ver `CACHE_TTL_MS` en el dashboard), así
+  que el consumo real queda muy por debajo del límite. El proyecto free de Supabase se pausa
+  tras **1 semana sin actividad**: la carga diaria del cron lo mantiene activo.
 - El filesystem es efímero: los archivos locales se pierden en cada deploy.
 - No hay historial de logs propio: se consultan en el panel de Render.
 
