@@ -7,6 +7,7 @@ const { createClient } = require("@supabase/supabase-js");
 const { leerExcel, fechaHoy, validarPlanilla } = require("./lib/leerExcel");
 const { claveDePlanilla, guardarPlanilla, resolverFechaArchivo } = require("./lib/planilla");
 const { slimear } = require("./lib/slim");
+const { refrescarIds, obtenerMapa, enriquecerConIds } = require("./lib/ids");
 const pkg = require("./package.json");
 
 const startedAt = new Date();
@@ -58,7 +59,16 @@ async function descargarYGuardarUnaVez(dry = false) {
 
     const { estado } = await guardarPlanilla(supabase, datos);
     console.log(`Planilla ${estado} en Supabase:`, fecha);
-    return { ok: true, fecha, fechaArchivo, estado, categorias: datos.listado_fondos.length, fondos: totalFondos, ...(aviso ? { aviso } : {}) };
+
+    // El mapa de ids se refresca en el mismo run: es barato (manda el ETag, así que si el
+    // catálogo no cambió CAFCI responde 304) y mantiene al día el link a la ficha de cada
+    // fondo. Si falla, no rompe la descarga: el payload sale sin idFondo y el dashboard usa
+    // su mapa local.
+    const ids = await refrescarIds(supabase);
+    if (ids.ok) console.log(`Mapa de ids: ${ids.estado} (${ids.total} clases)`);
+    else console.warn("⚠️ Mapa de ids:", ids.error);
+
+    return { ok: true, fecha, fechaArchivo, estado, ...(ids.ok ? { ids: ids.estado } : {}), categorias: datos.listado_fondos.length, fondos: totalFondos, ...(aviso ? { aviso } : {}) };
   } catch (error) {
     console.error("Error al descargar:", error.message);
     return { ok: false, fecha: fechaHoy(), error: error.message };
@@ -106,6 +116,23 @@ app.post("/api/descargar", async (req, res) => {
   res.status(resultado.ok ? 200 : 502).json(resultado);
 });
 
+// Payload de una planilla. En modo slim se enriquece con idFondo (el link a la ficha de
+// CAFCI necesita el id del FONDO, que no viene en el Excel: ver lib/ids). Si el mapa no está
+// disponible, se devuelve el slim sin enriquecer y el dashboard usa su mapa local: una falla
+// de CAFCI no debe romper la respuesta.
+async function responderPlanilla(datos, slim) {
+  if (!slim) {
+    return { referencias: datos.referencias, listado_fondos: datos.listado_fondos };
+  }
+  const payload = slimear(datos);
+  try {
+    return enriquecerConIds(payload, await obtenerMapa(supabase));
+  } catch (error) {
+    console.warn("ids: no se pudo enriquecer el payload:", error.message);
+    return payload;
+  }
+}
+
 // Endpoint: último día disponible
 app.get("/api/fondos", async (req, res) => {
   const { data, error } = await supabase
@@ -119,17 +146,13 @@ app.get("/api/fondos", async (req, res) => {
     return res.status(404).json({ error: "Todavía no hay datos disponibles" });
   }
 
-  // ?fields=slim (o ?slim=1) → payload liviano: los 22 campos que usa el dashboard (~15%)
+  // ?fields=slim (o ?slim=1) → payload liviano: los 22 campos que usa el dashboard (~15%),
+  // más idFondo al final cuando el mapa de ids está disponible (lib/ids.js)
   const slim = req.query.fields === "slim" || req.query.slim === "1";
   res.json({
     fecha: data.datos.fechaArchivo || data.fecha,
     slim: slim || undefined, // en modo completo la clave no se serializa (respuesta idéntica)
-    datos: slim
-      ? slimear(data.datos)
-      : {
-          referencias: data.datos.referencias,
-          listado_fondos: data.datos.listado_fondos,
-        },
+    datos: await responderPlanilla(data.datos, slim),
   });
 });
 
@@ -149,12 +172,7 @@ app.get("/api/fondos/:fecha", async (req, res) => {
   res.json({
     fecha: data.datos.fechaArchivo || data.fecha,
     slim: slim || undefined,
-    datos: slim
-      ? slimear(data.datos)
-      : {
-          referencias: data.datos.referencias,
-          listado_fondos: data.datos.listado_fondos,
-        },
+    datos: await responderPlanilla(data.datos, slim),
   });
 });
 
@@ -170,6 +188,31 @@ app.get("/api/fechas", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// Mapa de ids de CAFCI (idClase → idFondo), para el link a la ficha.
+// GET /api/ids → estado + mapa. POST /api/ids/refrescar → fuerza la descarga.
+// ─────────────────────────────────────────────────────────────
+app.get("/api/ids", async (req, res) => {
+  const mapa = await obtenerMapa(supabase);
+  const total = Object.keys(mapa).length;
+  if (!total) return res.status(404).json({ error: "Todavía no hay mapa de ids" });
+  res.json({ total, ids: mapa });
+});
+
+app.post("/api/ids/refrescar", async (req, res) => {
+  const token = process.env.CRON_TOKEN;
+  if (!token) {
+    return res.status(503).json({ error: "Falta CRON_TOKEN en las variables de entorno del servicio" });
+  }
+  const enviado = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (enviado !== token) return res.status(401).json({ error: "Token inválido" });
+
+  // ?forzar=1 ignora el ETag guardado y vuelve a bajar el catálogo completo.
+  const forzar = req.query.forzar === "1" || req.query.forzar === "true";
+  const resultado = await refrescarIds(supabase, { forzar });
+  res.status(resultado.ok ? 200 : 502).json(resultado);
+});
+
+// ─────────────────────────────────────────────────────────────
 // GET /  → información del servicio (en vez del 404 HTML de Express)
 // ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
@@ -177,7 +220,7 @@ app.get("/", (req, res) => {
     api: pkg.name,
     version: pkg.version,
     node: process.version,
-    endpoints: ["/api/fondos", "/api/fondos/:fecha", "/api/fechas", "/health", "/health/db", "POST /api/descargar"],
+    endpoints: ["/api/fondos", "/api/fondos/:fecha", "/api/fechas", "/api/ids", "/health", "/health/db", "POST /api/descargar", "POST /api/ids/refrescar"],
     repo: "https://github.com/magustin28/api-cafci",
   });
 });

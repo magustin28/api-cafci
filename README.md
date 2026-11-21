@@ -52,6 +52,8 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 | GET | `/api/fondos` | Último día disponible. Acepta `?fields=slim` (ver *Payload liviano*) |
 | GET | `/api/fondos/:fecha` | Día específico, `YYYY-MM-DD` (ej. `/api/fondos/2026-10-14`). Acepta `?fields=slim` |
 | GET | `/api/fechas` | Fechas disponibles, ascendente, `YYYY-MM-DD` |
+| GET | `/api/ids` | Mapa `idClase → idFondo` de CAFCI (una sola fila en `cafci_ids`). 404 si todavía no se refrescó |
+| POST | `/api/ids/refrescar` | Fuerza el refresco del mapa desde el catálogo de CAFCI (`Authorization: Bearer <CRON_TOKEN>`). Con `?forzar=1` ignora el ETag |
 | GET | `/health` | **Liveness** — sin acceso a red, responde siempre en < 5 s |
 | GET | `/health/db` | **Readiness** — consulta a Supabase; devuelve 503 si falla |
 | POST | `/api/descargar` | Dispara la descarga a demanda (header `Authorization: Bearer <CRON_TOKEN>`). Con `?dry=1` descarga, parsea y valida **sin escribir** (para probar sin riesgo) y devuelve en `fecha` la **fecha real de la planilla** publicada, en `YYYY-MM-DD` (la misma clave de la fila que reporta `/health/db`). Guarda bajo la fecha del archivo y es idempotente: responde `estado` = `creada` / `actualizada` / `sin cambios`. Lo usa el cron externo de GitHub Actions |
@@ -156,6 +158,44 @@ Campos incluidos — el nombre estable es el contrato con el cliente:
   (`cafci-dashboard/src/lib/utils.js`, `formatPlazoLiq`).
 - El nombre de la categoría no es un campo: viaja en `categoria_fondo` de cada categoría.
 - Si algún campo falta en el Excel, se devuelve `null` (no rompe).
+
+### Link a la ficha de CAFCI: mapa de ids (`lib/ids.js`)
+
+El dashboard tiene un link "ver ficha" por cada fondo. La ficha del sitio de CAFCI se arma con
+**dos** ids: `/fondos/{idFondo}?clase={idClase}`. El `idClase` es el **Código CAFCI** del Excel
+(el campo `cafci` del slim), pero el **idFondo no viene en la planilla**: es un id interno del
+sitio. Usar el código CNV en su lugar abre otro fondo (el `394` de 1810 Ahorro mostraba Delta
+Pesos; el correcto es `304`).
+
+El catálogo público `https://estadisticas.cafci.org.ar/consulta-de-fondos.json` (~2,9 MB, ~1.200
+fondos y ~4.900 clases) trae la relación. `lib/ids.js` lo baja, arma el mapa
+`idClase → idFondo` y lo guarda en Supabase:
+
+- **Tabla `cafci_ids`**: **una sola fila** (`id = 'mapa'`), que se **reemplaza** en cada refresco
+  (upsert). No acumula historial. Se crea una sola vez en Supabase → SQL Editor:
+
+  ```sql
+  create table if not exists public.cafci_ids (
+    id text primary key,
+    mapa jsonb not null default '{}'::jsonb,
+    etag text,
+    generated_at text,
+    total_fondos integer,
+    total_clases integer,
+    actualizado timestamptz not null default now()
+  );
+  alter table public.cafci_ids enable row level security;
+  -- Sin políticas: sólo la clave secreta (la API) la lee y la escribe.
+  ```
+- **Refresco**: en el mismo run de la descarga diaria (`POST /api/descargar` y el cron) y a demanda
+  con `POST /api/ids/refrescar`. No hay cron propio: la planilla se publica una vez al día.
+- **ETag**: se guarda el `etag` del catálogo y el próximo pedido manda `If-None-Match`; si CAFCI
+  responde `304`, no se reescribe nada. El refresco es barato.
+- **Enriquecido**: en `?fields=slim`, cada fila recibe un campo `idFondo` al final de `campos`
+  (23 en total). Si el mapa no está disponible (tabla sin migrar, Supabase caído), el payload sale
+  sin `idFondo` y el dashboard usa su copia local de respaldo (`cafciIds.js`).
+- **Caché**: el mapa se lee una vez por proceso. Si la tabla no existe todavía, se reintenta como
+  mucho una vez por minuto (para no llenar los logs).
 
 ## Variables de entorno
 
@@ -379,7 +419,9 @@ npm test        # node --test (runner de Node, sin dependencias nuevas)
 
 `test/leerExcel.test.js` cubre el parser compartido. `test/slim.test.js` cubre el payload
 liviano (estructura, nombres estables, resolución de las claves con fecha y **equivalencia
-campo por campo** contra la respuesta completa). `test/planilla.test.js` cubre `lib/planilla.js`:
+campo por campo** contra la respuesta completa). `test/ids.test.js` cubre el mapa de ids
+(`armarMapa` y `enriquecerConIds`: orden del campo nuevo, filas sin mapeo y payload sin
+`cafci`). `test/planilla.test.js` cubre `lib/planilla.js`:
 que la clave sea la **fecha del archivo** (y no la del run) y los casos crear / actualizar / sin
 cambios, incluidos los dos incidentes reales: la corrida que cruzó la medianoche (20/10) y los
 feriados. El Excel de prueba se genera **en memoria** con la propia librería `xlsx`, replicando la estructura del archivo de CAFCI (fila 8: grupos; fila 9: sub-encabezados con las fechas de referencia; E12: fecha del archivo; de la fila 11 en adelante: categorías y fondos), así que no hay fixture binario que mantener en el repo.
@@ -400,7 +442,8 @@ cafci-api/
 ├── server.js             # API Express + cron de descarga (lo único que corre en Render)
 ├── lib/leerExcel.js      # parser del Excel de CAFCI + fechaHoy / convertirFecha / validarPlanilla
 ├── lib/planilla.js       # clave de la fila (fecha del archivo) + guardado idempotente
-├── lib/slim.js           # payload liviano: 22 campos estables para el dashboard
+├── lib/slim.js           # payload liviano: 22 campos estables (+ idFondo si el mapa está disponible)
+├── lib/ids.js            # mapa idClase → idFondo de CAFCI (link a la ficha) + refresco con ETag
 ├── .github/workflows/descarga-diaria.yml   # cron externo (22:40 ART) → POST /api/descargar
 ├── descargar.js          # (local) fuerza una descarga puntual
 ├── cargar-historico.js   # (local) carga masiva desde ./historico
@@ -409,6 +452,7 @@ cafci-api/
 ├── test/leerExcel.test.js # tests del parser (npm test, sin dependencias nuevas)
 ├── test/slim.test.js     # tests del payload liviano
 ├── test/planilla.test.js # tests de la clave del archivo y del guardado idempotente
+├── test/ids.test.js      # tests del mapa de ids (armado y enriquecido del payload)
 ├── .env.example          # plantilla de variables de entorno
 └── package.json
 ```
