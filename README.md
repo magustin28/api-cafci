@@ -442,6 +442,7 @@ cafci-api/
 ├── test/ids.test.js      # tests del mapa de ids (armado y enriquecido del payload)
 ├── docs/sql/cafci_ids.sql  # (local, no versionado) DDL de la tabla cafci_ids
 ├── docs/operacion.md     # (local, no versionado) claves, tablas internas y rotación
+├── docs/otherFunctions.md # (local, no versionado) endpoints de desarrollo (referencia)
 ├── .env.example          # plantilla de variables de entorno
 └── package.json
 ```
