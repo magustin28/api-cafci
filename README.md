@@ -172,21 +172,11 @@ fondos y ~4.900 clases) trae la relación. `lib/ids.js` lo baja, arma el mapa
 `idClase → idFondo` y lo guarda en Supabase:
 
 - **Tabla `cafci_ids`**: **una sola fila** (`id = 'mapa'`), que se **reemplaza** en cada refresco
-  (upsert). No acumula historial. Se crea una sola vez en Supabase → SQL Editor:
-
-  ```sql
-  create table if not exists public.cafci_ids (
-    id text primary key,
-    mapa jsonb not null default '{}'::jsonb,
-    etag text,
-    generated_at text,
-    total_fondos integer,
-    total_clases integer,
-    actualizado timestamptz not null default now()
-  );
-  alter table public.cafci_ids enable row level security;
-  -- Sin políticas: sólo la clave secreta (la API) la lee y la escribe.
-  ```
+  (upsert). No acumula historial. Columnas: `id` (text, PK), `mapa` (jsonb), `etag`,
+  `generated_at`, `total_fondos`, `total_clases` y `actualizado` (timestamptz). Tiene RLS activo
+  y **sin políticas**: sólo la clave secreta la lee y la escribe. El DDL de creación se corre una
+  sola vez desde el SQL Editor de Supabase y **no se versiona**; queda en el archivo local
+  `docs/sql/cafci_ids.sql` de este repo (la carpeta `docs/` está en el `.gitignore`).
 - **Refresco**: en el mismo run de la descarga diaria (`POST /api/descargar` y el cron) y a demanda
   con `POST /api/ids/refrescar`. No hay cron propio: la planilla se publica una vez al día.
 - **ETag**: se guarda el `etag` del catálogo y el próximo pedido manda `If-None-Match`; si CAFCI
@@ -365,30 +355,20 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
     llega al navegador): Auth y las tablas propias del usuario.
   - **API → Supabase** con la clave *secreta* (`SUPABASE_KEY`), que saltea RLS.
 
-  El RLS está activo en todas las tablas y **la clave publishable no ve ninguna fila**:
-  `planillas_cafci` no tiene *ninguna* política (deny-all: sólo la clave secreta la lee) y las
-  tablas del dashboard tienen políticas `user_id = auth.uid()`, así que cada usuario ve
-  únicamente sus filas cuando está logueado.
-
-  Comprobado contra la API REST de PostgREST (`GET /rest/v1/<tabla>?select=*&limit=3`) con las
-  dos claves:
-
-  | Tabla | Publishable (dashboard) | Secreta (API) |
-  | --- | --- | --- |
-  | `planillas_cafci` | 200 · **0 filas** | 200 · 3 filas |
-  | `favoritos` | 200 · **0 filas** | 200 · 3 filas |
-  | `suscripciones` | 200 · **0 filas** | 200 · 3 filas |
-  | `rescates` | 200 · **0 filas** | 200 · 3 filas |
-  | `rescate_detalles` | 200 · **0 filas** | 200 · 3 filas |
-
-  O sea: aunque la clave publishable es pública por diseño, por sí sola no expone ningún dato.
+  El RLS está activo en todas las tablas y **la clave publishable no ve ninguna fila**: la tabla
+  de planillas no tiene *ninguna* política (deny-all: sólo la clave secreta la lee) y las tablas
+  del dashboard tienen políticas `user_id = auth.uid()`, así que cada usuario ve únicamente sus
+  filas cuando está logueado. Comprobado contra la API REST de PostgREST con las dos claves: la
+  publishable devuelve 0 filas en todas las tablas y la secreta sí lee. O sea: aunque la clave
+  publishable es pública por diseño, por sí sola no expone ningún dato.
+  El detalle de las tablas, sus columnas y su DDL queda en la documentación local (no versionada).
 - `cors()` está abierto a cualquier origen (a evaluar: restringirlo a GitHub Pages).
 - No hay rate limiting en los endpoints públicos.
 
 ## Convención de nombres
 
-Los objetos de la base van en **minúsculas `snake_case`**, con las tablas en plural:
-`planillas_cafci`, `favoritos`, `suscripciones`, `rescates`, `rescate_detalles`.
+Los objetos de la base van en **minúsculas `snake_case`**, con las tablas en plural (por ejemplo
+`planillas_cafci`).
 En Postgres un identificador creado con mayúsculas queda *case-sensitive* y obliga a
 entrecomillarlo en cada consulta (`select * from "planillas_cafci"`), y es la causa típica del
 error `relation "planillascafci" does not exist` cuando alguien se olvida de las comillas.
@@ -460,6 +440,7 @@ cafci-api/
 ├── test/slim.test.js     # tests del payload liviano
 ├── test/planilla.test.js # tests de la clave del archivo y del guardado idempotente
 ├── test/ids.test.js      # tests del mapa de ids (armado y enriquecido del payload)
+├── docs/sql/cafci_ids.sql  # (local, no versionado) DDL de la tabla cafci_ids
 ├── .env.example          # plantilla de variables de entorno
 └── package.json
 ```
