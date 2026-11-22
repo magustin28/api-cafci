@@ -274,6 +274,12 @@ contenedor sin motivo. La verificación real de la base está en `/health/db` (5
   esto y el job falló aunque la base estaba al día). El **keep-alive** de UptimeRobot sigue siendo
   clave: evita el cold start de ~1 min en el primer uso del día **y** que el servicio esté
   dormido a la hora del cron.
+- 🔁 **Mapa de ids a mano**: `.github/workflows/refrescar-ids.yml` (sólo `workflow_dispatch`) hace
+  `POST /api/ids/refrescar` y después verifica `GET /api/ids`. Sirve para llenar el mapa la
+  primera vez (cuando la tabla `cafci_ids` está vacía) sin esperar al cron de la noche. No tiene
+  cron propio porque la descarga diaria ya refresca el mapa en el mismo run. El disparo manual de
+  `descarga-diaria.yml` ahora tiene un input `dry` (por defecto `false`): antes **todo** disparo
+  manual era en modo seco y no escribía nada, así que no servía para llenar la base.
 - ⚠️ **Los `schedule` de GitHub Actions no son puntuales**: corren en una cola compartida y la
   documentación avisa que se pueden **demorar horas** en períodos de alta carga (o descartar el
   job). El 20/10/2026 la corrida pautada para las 22:40 ART se ejecutó a las **03:34 ART del día
@@ -445,6 +451,7 @@ cafci-api/
 ├── lib/slim.js           # payload liviano: 22 campos estables (+ idFondo si el mapa está disponible)
 ├── lib/ids.js            # mapa idClase → idFondo de CAFCI (link a la ficha) + refresco con ETag
 ├── .github/workflows/descarga-diaria.yml   # cron externo (22:40 ART) → POST /api/descargar
+├── .github/workflows/refrescar-ids.yml     # (manual) refresca el mapa de ids → POST /api/ids/refrescar
 ├── descargar.js          # (local) fuerza una descarga puntual
 ├── cargar-historico.js   # (local) carga masiva desde ./historico
 ├── cargar-historico-cnv.js # (local) recarga el histórico desde los documentos públicos de la CNV

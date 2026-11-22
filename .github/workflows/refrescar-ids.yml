@@ -1,0 +1,63 @@
+name: Refrescar mapa de ids CAFCI
+
+# Refresca el mapa idClase → idFondo que usa la API para armar el link "ver ficha" del
+# dashboard (lib/ids.js). El mapa también se refresca solo dentro de la descarga diaria; este
+# workflow existe para forzarlo a mano desde la pestaña Actions sin pasar por la terminal, por
+# ejemplo la primera vez (cuando la tabla cafci_ids está vacía) o si CAFCI agrega fondos nuevos
+# y no se quiere esperar al cron de la noche.
+#
+# No corre por cron: no hace falta. La planilla se publica una vez al día y la descarga diaria
+# ya refresca el mapa en el mismo run; un cron aparte sólo duplicaría el trabajo.
+on:
+  workflow_dispatch:
+    inputs:
+      forzar:
+        description: "Ignorar el ETag guardado y volver a bajar el catálogo completo"
+        type: boolean
+        default: false
+
+jobs:
+  refrescar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refrescar el mapa (POST /api/ids/refrescar)
+        run: |
+          set -euo pipefail
+          url="https://api-cafci-x8m6.onrender.com/api/ids/refrescar"
+          # ?forzar=1 ignora el ETag guardado: baja el catálogo aunque no haya cambiado. Sin
+          # forzar, si CAFCI responde 304 la API contesta "sin cambios" y no escribe nada.
+          if [ "${{ inputs.forzar }}" = "true" ]; then
+            url="$url?forzar=1"
+          fi
+          # El cuerpo se separa del código con -w para poder mostrarlo en el log del job.
+          resp=$(curl -sS -X POST "$url" \
+            -w '\n%{http_code}' -H "Authorization: Bearer ${{ secrets.CRON_TOKEN }}")
+          code=$(printf '%s' "$resp" | tail -n1)
+          body=$(printf '%s' "$resp" | sed '$d')
+          echo "HTTP $code"
+          echo "$body"
+          if [ "$code" != "200" ]; then
+            echo "::error::El refresco del mapa falló (HTTP $code): $body"
+            exit 1
+          fi
+
+      - name: Verificar que el mapa quedó guardado
+        run: |
+          set -euo pipefail
+          api="https://api-cafci-x8m6.onrender.com"
+          # GET /api/ids es público y devuelve { total, ids }. Si la tabla está vacía o no existe,
+          # responde 404 con { error }: en ese caso el paso falla con el mensaje de la API.
+          code=$(curl -sS -o /tmp/ids.json -w '%{http_code}' "$api/api/ids")
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::El mapa no quedó guardado (HTTP $code): $(cat /tmp/ids.json)"
+            exit 1
+          fi
+          # Piso de cordura: el catálogo real tiene ~4.900 clases. Si el mapa vino con mucho
+          # menos, se guardó algo incompleto y conviene mirarlo antes de darlo por bueno.
+          total=$(jq -r '.total' /tmp/ids.json)
+          echo "clases en el mapa: $total"
+          if [ "$total" -lt 1000 ]; then
+            echo "::error::El mapa tiene sólo $total clases: parece incompleto"
+            exit 1
+          fi

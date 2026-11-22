@@ -10,7 +10,12 @@ name: Descarga diaria CAFCI
 on:
   schedule:
     - cron: "40 1 * * 2-6"
-  workflow_dispatch: {} # para dispararlo a mano desde la pestaña Actions
+  workflow_dispatch: # para dispararlo a mano desde la pestaña Actions
+    inputs:
+      dry:
+        description: "Modo seco: descarga y verifica sin escribir en la base"
+        type: boolean
+        default: false
 
 jobs:
   descargar:
@@ -20,8 +25,10 @@ jobs:
         run: |
           set -euo pipefail
           url="https://api-cafci-x8m6.onrender.com/api/descargar"
-          # Disparo manual = modo seco (?dry=1): prueba todo el camino sin escribir en la base
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # El modo seco se pide con el input `dry` (por defecto false): un disparo manual desde
+          # la pestaña Actions descarga de verdad, igual que el cron. Antes el disparo manual era
+          # siempre seco, así que no servía para llenar la base ni el mapa de ids.
+          if [ "${{ inputs.dry }}" = "true" ]; then
             url="$url?dry=1"
           fi
           resp=$(curl -sS -X POST "$url" \
@@ -43,8 +50,9 @@ jobs:
           # escribir). NO se compara contra "hoy": si este job corre tarde (GitHub puede demorar
           # el schedule horas) o si es feriado, la planilla publicada sigue siendo la del último
           # día hábil y eso es correcto. Lo que no puede pasar es que la base quede ATRÁS.
-          # Corre también en workflow_dispatch: el modo seco no escribe nada, así que el chequeo
-          # se puede probar a mano desde la pestaña Actions.
+          # Corre también en workflow_dispatch: con dry=false compara contra la base recién
+          # actualizada; con dry=true no escribe nada y falla si la base venía atrasada (eso es
+          # correcto: avisa que el cron no está corriendo).
           dry=$(curl -sS -X POST "$api/api/descargar?dry=1" \
             -H "Authorization: Bearer ${{ secrets.CRON_TOKEN }}")
           # Si la descarga falló, el cuerpo trae ok:false y una fecha de relleno (fechaHoy): no
