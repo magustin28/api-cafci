@@ -226,15 +226,18 @@ async function serieConRpc(cafci, limite) {
   return armarRespuestaSerie(cafci, puntos, ultimo?.fondo ?? null, ultimo?.moneda ?? null, limite);
 }
 
-// Fallback: baja todas las planillas y filtra en memoria. Es lento (cada
-// planilla pesa ~880 KB), así que sólo se usa mientras falta la RPC.
+// Fallback: si la RPC todavía no existe, se leen las últimas planillas y se
+// filtra en memoria. Es lento (cada planilla pesa ~880 KB), así que se limita
+// a las 400 más recientes: alcanza para el gráfico y no agota la memoria.
 async function serieConFallback(cafci, limite) {
   const { data, error } = await supabase
     .from("planillas_cafci")
     .select("fecha, datos")
-    .order("fecha", { ascending: true });
+    .order("fecha", { ascending: false })
+    .limit(400);
   if (error) throw error;
-  const { puntos, fondo, moneda } = extraerSerie(data || [], cafci);
+  const filas = (data || []).slice().reverse();
+  const { puntos, fondo, moneda } = extraerSerie(filas, cafci);
   return armarRespuestaSerie(cafci, puntos, fondo, moneda, limite);
 }
 
