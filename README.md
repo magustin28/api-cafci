@@ -52,11 +52,34 @@ El parser vive en **`lib/leerExcel.js`** (lo comparten `server.js`, `descargar.j
 | GET | `/api/fondos` | Último día disponible. Acepta `?fields=slim` (ver *Payload liviano*) |
 | GET | `/api/fondos/:fecha` | Día específico, `YYYY-MM-DD` (ej. `/api/fondos/2026-10-14`). Acepta `?fields=slim` |
 | GET | `/api/fechas` | Fechas disponibles, ascendente, `YYYY-MM-DD` |
+| GET | `/api/serie/:cafci` | Serie histórica de un fondo por **código CAFCI**. Acepta `?limite=N` (últimos N puntos). 404 si el código no existe en ninguna planilla |
 | GET | `/api/ids` | Mapa `idClase → idFondo` de CAFCI (una sola fila en `cafci_ids`). 404 si todavía no se refrescó |
 | POST | `/api/ids/refrescar` | Fuerza el refresco del mapa desde el catálogo de CAFCI (`Authorization: Bearer <CRON_TOKEN>`). Con `?forzar=1` ignora el ETag |
 | GET | `/health` | **Liveness** — sin acceso a red, responde siempre en < 5 s |
 | GET | `/health/db` | **Readiness** — consulta a Supabase; devuelve 503 si falla |
 | POST | `/api/descargar` | Dispara la descarga a demanda (header `Authorization: Bearer <CRON_TOKEN>`). Con `?dry=1` descarga, parsea y valida **sin escribir** (para probar sin riesgo) y devuelve en `fecha` la **fecha real de la planilla** publicada, en `YYYY-MM-DD` (la misma clave de la fila que reporta `/health/db`). Guarda bajo la fecha del archivo y es idempotente: responde `estado` = `creada` / `actualizada` / `sin cambios`. Lo usa el cron externo de GitHub Actions |
+
+### Respuesta de `/api/serie/:cafci`
+
+```jsonc
+{
+  "cafci": 6419,                 // código CAFCI del fondo (el identificador estable)
+  "fondo": "BAVSA Renta Balanceado IX - Clase A",
+  "moneda": "ARS",
+  "puntos": [                    // un punto por día en que el fondo aparece en la planilla
+    { "fecha": "2026-01-02", "valor": 950.12 },
+    { "fecha": "2026-01-05", "valor": 951.03 }
+  ],
+  "total": 215,                  // puntos antes de aplicar ?limite
+  "desde": "2026-01-02",         // primer punto del rango devuelto
+  "hasta": "2026-11-20"          // último punto del rango devuelto
+}
+```
+
+La serie la calcula la función SQL `serie_fondo` (ver `docs/sql/serie_fondo.sql`, se corre
+una vez en el SQL Editor): lee `planillas_cafci` y desarma el JSONB al vuelo, sin tablas
+nuevas. Si la función todavía no existe, la API cae a un fallback en memoria (más lento) y lo
+avisa por consola. El resultado se cachea 10 minutos en memoria.
 
 ### Respuesta de `/api/fondos`
 
@@ -430,6 +453,7 @@ cafci-api/
 ├── lib/planilla.js       # clave de la fila (fecha del archivo) + guardado idempotente
 ├── lib/slim.js           # payload liviano: 22 campos estables (+ idFondo si el mapa está disponible)
 ├── lib/ids.js            # mapa idClase → idFondo de CAFCI (link a la ficha) + refresco con ETag
+├── lib/serie.js          # serie histórica por código CAFCI (fallback en memoria de la RPC)
 ├── .github/workflows/descarga-diaria.yml   # cron externo (22:40 ART) → POST /api/descargar
 ├── .github/workflows/refrescar-ids.yml     # (manual) refresca el mapa de ids → POST /api/ids/refrescar
 ├── descargar.js          # (local) fuerza una descarga puntual
@@ -440,7 +464,9 @@ cafci-api/
 ├── test/slim.test.js     # tests del payload liviano
 ├── test/planilla.test.js # tests de la clave del archivo y del guardado idempotente
 ├── test/ids.test.js      # tests del mapa de ids (armado y enriquecido del payload)
+├── test/serie.test.js    # tests de la serie histórica (normalización, búsqueda y recorte)
 ├── docs/sql/cafci_ids.sql  # (local, no versionado) DDL de la tabla cafci_ids
+├── docs/sql/serie_fondo.sql # (local, no versionado) función SQL de la serie histórica
 ├── docs/operacion.md     # (local, no versionado) claves, tablas internas y rotación
 ├── docs/otherFunctions.md # (local, no versionado) endpoints de desarrollo (referencia)
 ├── .env.example          # plantilla de variables de entorno

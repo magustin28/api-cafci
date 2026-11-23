@@ -8,6 +8,7 @@ const { leerExcel, fechaHoy, validarPlanilla } = require("./lib/leerExcel");
 const { claveDePlanilla, guardarPlanilla, resolverFechaArchivo } = require("./lib/planilla");
 const { slimear } = require("./lib/slim");
 const { refrescarIds, obtenerMapa, enriquecerConIds } = require("./lib/ids");
+const { normalizarCafci, extraerSerie, recortar } = require("./lib/serie");
 const pkg = require("./package.json");
 
 const startedAt = new Date();
@@ -188,6 +189,98 @@ app.get("/api/fechas", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// GET /api/serie/:cafci → serie histórica de un fondo (código CAFCI).
+// Usa la función RPC `serie_fondo` (docs/sql/serie_fondo.sql): la hace
+// Postgres y devuelve solo las filas de la serie. Si la función todavía no
+// se corrió, cae al fallback en memoria (lib/serie.js) y avisa por consola.
+// Cachea 10 min en memoria: el histórico cambia una vez al día.
+// ─────────────────────────────────────────────────────────────
+const SERIE_TTL_MS = 10 * 60 * 1000;
+const serieCache = new Map(); // clave -> { ts, respuesta }
+
+// La RPC no existe hasta que se corre el DDL: PostgREST responde 42883.
+function esFuncionInexistente(error) {
+  return error?.code === "42883" || /does not exist|no existe/i.test(error?.message || "");
+}
+
+// Arma la respuesta con el mismo formato para los dos caminos (RPC y fallback).
+function armarRespuestaSerie(cafci, puntos, fondo, moneda, limite) {
+  const recortados = recortar(puntos, limite);
+  return {
+    cafci,
+    fondo,
+    moneda,
+    puntos: recortados,
+    total: puntos.length,
+    desde: recortados[0]?.fecha ?? null,
+    hasta: recortados[recortados.length - 1]?.fecha ?? null,
+  };
+}
+
+async function serieConRpc(cafci, limite) {
+  const { data, error } = await supabase.rpc("serie_fondo", { p_cafci: cafci });
+  if (error) throw error;
+  const filas = data || [];
+  const puntos = filas.map((f) => ({ fecha: f.fecha, valor: Number(f.valor) }));
+  const ultimo = filas[filas.length - 1];
+  return armarRespuestaSerie(cafci, puntos, ultimo?.fondo ?? null, ultimo?.moneda ?? null, limite);
+}
+
+// Fallback: baja todas las planillas y filtra en memoria. Es lento (cada
+// planilla pesa ~880 KB), así que sólo se usa mientras falta la RPC.
+async function serieConFallback(cafci, limite) {
+  const { data, error } = await supabase
+    .from("planillas_cafci")
+    .select("fecha, datos")
+    .order("fecha", { ascending: true });
+  if (error) throw error;
+  const { puntos, fondo, moneda } = extraerSerie(data || [], cafci);
+  return armarRespuestaSerie(cafci, puntos, fondo, moneda, limite);
+}
+
+app.get("/api/serie/:cafci", async (req, res) => {
+  const cafci = normalizarCafci(req.params.cafci);
+  if (cafci === null) {
+    return res.status(400).json({ error: "El código CAFCI debe ser un entero positivo" });
+  }
+
+  const limite = Number(req.query.limite) || null;
+  const clave = `${cafci}:${limite || "todo"}`;
+  const cacheado = serieCache.get(clave);
+  if (cacheado && Date.now() - cacheado.ts < SERIE_TTL_MS) {
+    return res.json(cacheado.respuesta);
+  }
+
+  let respuesta;
+  try {
+    respuesta = await serieConRpc(cafci, limite);
+  } catch (error) {
+    if (!esFuncionInexistente(error)) {
+      return res.status(502).json({ error: "No se pudo leer la serie", detalle: error.message });
+    }
+    console.warn("serie: falta la función serie_fondo; se usa el fallback en memoria");
+    try {
+      respuesta = await serieConFallback(cafci, limite);
+    } catch (errorFallback) {
+      return res.status(502).json({ error: "No se pudo leer la serie", detalle: errorFallback.message });
+    }
+  }
+
+  if (!respuesta.puntos.length) {
+    return res.status(404).json({ error: `No hay datos para el código CAFCI ${cafci}` });
+  }
+
+  // Cache acotado: si crece demasiado, se descartan las entradas vencidas.
+  if (serieCache.size > 200) {
+    for (const [k, v] of serieCache) {
+      if (Date.now() - v.ts >= SERIE_TTL_MS) serieCache.delete(k);
+    }
+  }
+  serieCache.set(clave, { ts: Date.now(), respuesta });
+  res.json(respuesta);
+});
+
+// ─────────────────────────────────────────────────────────────
 // Mapa de ids de CAFCI (idClase → idFondo), para el link a la ficha.
 // GET /api/ids → estado + mapa. POST /api/ids/refrescar → fuerza la descarga.
 // ─────────────────────────────────────────────────────────────
@@ -220,7 +313,7 @@ app.get("/", (req, res) => {
     api: pkg.name,
     version: pkg.version,
     node: process.version,
-    endpoints: ["/api/fondos", "/api/fondos/:fecha", "/api/fechas", "/api/ids", "/health", "/health/db", "POST /api/descargar", "POST /api/ids/refrescar"],
+    endpoints: ["/api/fondos", "/api/fondos/:fecha", "/api/fechas", "/api/serie/:cafci", "/api/ids", "/health", "/health/db", "POST /api/descargar", "POST /api/ids/refrescar"],
     repo: "https://github.com/magustin28/api-cafci",
   });
 });
